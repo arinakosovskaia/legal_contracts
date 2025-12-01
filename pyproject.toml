@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contract-cuad"
+version = "0.1.0"
+description = "Contract clause classification against CUAD using open LLMs"
+readme = "README.md"
+authors = [
+    { name = "Arina Kosovskaia", email = "ariina.kosovskaya@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "transformers>=4.35",
+    "datasets>=2.14",
+    "pandas>=2.0",
+    "nltk>=3.8",
+    "typer>=0.9",
+    "tqdm>=4.66",
+    "torch>=2.1",
+    "accelerate>=0.23"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1"]
+
+[project.scripts]
+contract-cuad = "contract_cuad.cli:app"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["contract_cuad*"]
+
+[tool.setuptools.package-data]
+"contract_cuad" = ["data/*.csv", "data/*.json"]
