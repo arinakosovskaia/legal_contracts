@@ -29,7 +29,6 @@ def build_categories_block(categories: Iterable[Category]) -> str:
 
 def build_fewshot_block(
     fewshot_examples: Optional[Dict[str, List]],
-    max_examples_total: int = 40,
     max_examples_per_category: int = 1,
 ) -> str:
     if not fewshot_examples:
@@ -39,8 +38,6 @@ def build_fewshot_block(
     for category, snippets in fewshot_examples.items():
         used_for_category = 0
         for snippet in snippets:
-            if counter > max_examples_total:
-                break
             if used_for_category >= max_examples_per_category:
                 break
             clause_text = snippet.get("clause") if isinstance(snippet, dict) else str(snippet)
@@ -52,8 +49,6 @@ def build_fewshot_block(
             lines.append("\n".join(example_lines))
             counter += 1
             used_for_category += 1
-        if counter > max_examples_total:
-            break
     return "\n\n".join(lines)
 
 
@@ -220,7 +215,6 @@ def classify_clause(
     if fewshot_block is None:
         fewshot_block = build_fewshot_block(
             fewshot_examples,
-            max_examples_total=fewshot_cfg.max_total_examples,
             max_examples_per_category=fewshot_cfg.max_examples_per_category,
         )
     lookup = category_lookup or build_category_lookup(categories)
@@ -286,7 +280,6 @@ def classify_contract_text(
     cat_block = build_categories_block(categories)
     fewshot_block = build_fewshot_block(
         fewshot_examples,
-        max_examples_total=fewshot_cfg.max_total_examples,
         max_examples_per_category=fewshot_cfg.max_examples_per_category,
     )
     category_lookup = build_category_lookup(categories)

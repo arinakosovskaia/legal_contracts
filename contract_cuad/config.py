@@ -34,7 +34,6 @@ class FewShotConfig:
     """Controls few-shot example selection."""
 
     max_examples_per_category: int = 1
-    max_total_examples: int = 40
 
 
 @dataclass(**_DATACLASS_KW)

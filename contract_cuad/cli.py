@@ -13,7 +13,7 @@ import typer
 from .categories import load_cuad_categories
 from .classifier import classify_contract_text
 from .config import FewShotConfig, ModelConfig
-from .cuad_fewshot import build_fewshot_examples, load_cuad_qa
+from .cuad_fewshot import build_fewshot_examples, load_cuad_qa, save_fewshot_by_category
 from .llm_client import LLMClient
 
 logging.basicConfig(level=logging.INFO)
@@ -23,12 +23,15 @@ app = typer.Typer(help="CLI for clause classification against CUAD categories")
 
 @app.command("prepare-fewshot")
 def prepare_fewshot(
-    output_json: Path = typer.Option(..., help="Path to save the few-shot JSON cache."),
+    output_json: Optional[Path] = typer.Option(None, help="Optional path to save a single JSON cache."),
+    output_dir: Optional[Path] = typer.Option(None, help="Optional directory to save per-category JSON files."),
     max_examples_per_category: int = typer.Option(1, help="Max snippets per CUAD category."),
-    max_total_examples: int = typer.Option(40, help="Overall cap on few-shot examples."),
     context_window: int = typer.Option(240, help="Characters to keep before/after each answer."),
 ) -> None:
     """Construct few-shot examples straight from CUAD QA and save as JSON."""
+
+    if output_json is None and output_dir is None:
+        raise typer.BadParameter("Provide at least one of --output-json or --output-dir.")
 
     categories = load_cuad_categories()
     dataset = load_cuad_qa()
@@ -36,12 +39,18 @@ def prepare_fewshot(
         categories,
         dataset=dataset,
         max_examples_per_category=max_examples_per_category,
-        max_total_examples=max_total_examples,
         context_window=context_window,
     )
-    output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(json.dumps(examples, indent=2))
-    typer.echo(f"Saved {sum(len(v) for v in examples.values())} examples to {output_json}")
+    total_examples = sum(len(v) for v in examples.values())
+
+    if output_json is not None:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(json.dumps(examples, indent=2, ensure_ascii=False))
+        typer.echo(f"Saved {total_examples} examples to {output_json}")
+
+    if output_dir is not None:
+        manifest = save_fewshot_by_category(examples, output_dir)
+        typer.echo(f"Saved per-category few-shot files (manifest: {manifest})")
 
 
 @app.command("classify-file")
@@ -58,7 +67,6 @@ def classify_file(
     paragraph_overlap: int = typer.Option(0, help="Paragraph overlap between clauses."),
     max_clauses: Optional[int] = typer.Option(None, help="Optional limit on clauses to classify."),
     disable_progress: bool = typer.Option(False, help="Disable tqdm progress bars."),
-    fewshot_prompt_max_total: int = typer.Option(40, help="Max few-shot examples injected into prompt."),
     fewshot_prompt_max_per_category: int = typer.Option(1, help="Max examples per category in the prompt."),
     device_map: str = typer.Option(
         "auto",
@@ -82,7 +90,6 @@ def classify_file(
     llm = LLMClient(config=model_config)
     contract_text = contract_path.read_text()
     fewshot_config = FewShotConfig(
-        max_total_examples=fewshot_prompt_max_total,
         max_examples_per_category=fewshot_prompt_max_per_category,
     )
     results = classify_contract_text(

@@ -146,19 +146,19 @@ def build_fewshot_examples(
     *,
     dataset: Optional[Dataset] = None,
     max_examples_per_category: int = 1,
-    max_total_examples: int = 40,
     context_window: int = 240,
 ) -> Dict[str, List[Dict[str, str]]]:
     """Construct labeled clause snippets keyed by category."""
 
     LOGGER.info(
-        "Building few-shot examples (max %s per category, %s total)",
+        "Building few-shot examples (max %s per category)",
         max_examples_per_category,
-        max_total_examples,
     )
+    if max_examples_per_category <= 0:
+        return {}
     ds = dataset or load_cuad_qa()
     fewshot: Dict[str, List[Dict[str, str]]] = {cat.name: [] for cat in categories}
-    total = 0
+    remaining = set(fewshot.keys())
     for record in ds:
         question = record.get("question", "")
         context = record.get("context", "")
@@ -171,12 +171,24 @@ def build_fewshot_examples(
         if not matched_category:
             continue
         bucket = fewshot.get(matched_category.name)
-        if bucket is None or len(bucket) >= max_examples_per_category:
+        if bucket is None:
+            continue
+        if len(bucket) >= max_examples_per_category:
+            remaining.discard(matched_category.name)
+            if not remaining:
+                break
             continue
         snippet = _extract_snippet(context, int(answer_starts[0]), answer_texts[0], window=context_window)
-        bucket.append({"clause": snippet, "question": question})
-        total += 1
-        if total >= max_total_examples:
+        bucket.append(
+            {
+                "clause": snippet,
+                "question": question,
+                "evidence": answer_texts[0],
+            }
+        )
+        if len(bucket) >= max_examples_per_category:
+            remaining.discard(matched_category.name)
+        if not remaining:
             break
     result = {category: examples for category, examples in fewshot.items() if examples}
     LOGGER.info(
@@ -185,3 +197,38 @@ def build_fewshot_examples(
         len(result),
     )
     return result
+
+
+def save_fewshot_by_category(
+    fewshot_examples: Dict[str, List[Dict[str, str]]],
+    output_dir: str | os.PathLike,
+) -> Path:
+    """Write one JSON file per category plus a manifest.json.
+
+    Returns:
+        Path to the written manifest.json.
+    """
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def slugify(name: str) -> str:
+        s = name.strip().lower()
+        s = re.sub(r"[^a-z0-9]+", "_", s)
+        s = re.sub(r"_+", "_", s).strip("_")
+        return s or "category"
+
+    manifest: Dict[str, object] = {"categories": {}}
+    for category_name, examples in sorted(fewshot_examples.items(), key=lambda kv: kv[0].lower()):
+        filename = f"{slugify(category_name)}.json"
+        path = out_dir / filename
+        path.write_text(json.dumps(examples, indent=2, ensure_ascii=False))
+        manifest["categories"][category_name] = {
+            "file": filename,
+            "count": len(examples),
+        }
+
+    manifest_path = out_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
+    LOGGER.info("Wrote per-category few-shot files to %s", out_dir)
+    return manifest_path
