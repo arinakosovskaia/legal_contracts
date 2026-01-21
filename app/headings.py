@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+# Markers / numbering forms (by shape, not by meaning).
+_RE_ARTICLE_ROMAN = re.compile(r"^\s*ARTICLE\s+(?P<roman>[IVXLCDM]+)\b", re.IGNORECASE)
+_RE_ARTICLE_NUM = re.compile(r"^\s*ARTICLE\s+(?P<num>\d+)\b", re.IGNORECASE)
+_RE_SECTION_NUM = re.compile(r"^\s*SECTION\s+(?P<num>\d+(?:\.\d+)*)\b", re.IGNORECASE)
+_RE_CLAUSE_NUM = re.compile(r"^\s*CLAUSE\s+(?P<num>\d+(?:\.\d+)*)\b", re.IGNORECASE)
+_RE_PARA_SIGN = re.compile(r"^\s*§\s*(?P<num>\d+(?:\.\d+)*)\b")
+_RE_NUMBERED = re.compile(
+    r"^\s*(?P<num>\d+(?:\.\d+){0,6})(?P<tail>\([a-z]\))?\s*(?:[.)]\s*)?(?P<title>.+)?$",
+    re.IGNORECASE,
+)
+
+# Unnumbered title-like lines (ALL CAPS / Title Case) — evaluated via heuristics.
+_RE_ALLCAPS_LINE = re.compile(r"^[A-Z0-9][A-Z0-9 .,:;()'\"/\\-]{2,}$")
+
+_SENTENCE_END = re.compile(r"[.!?]$")
+_BAD_PUNCT = re.compile(r"[;]")
+_EXCESS_COMMAS = re.compile(r",")
+
+
+@dataclass(frozen=True)
+class Heading:
+    level: int  # 0 = article-like, 1 = section-like, 2+ = sub-sections (1.2, 4.1(a), ...)
+    label: str  # normalized label for "path"
+    title: Optional[str]  # optional heading title text
+    raw: str
+
+
+def _uppercase_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    upp = sum(1 for c in letters if c.isupper())
+    return upp / len(letters)
+
+
+def _titlecase_ratio(text: str) -> float:
+    words = [w for w in re.split(r"\s+", text.strip()) if w]
+    if not words:
+        return 0.0
+    def is_title(w: str) -> bool:
+        return len(w) >= 2 and w[0].isupper() and any(ch.islower() for ch in w[1:])
+    return sum(1 for w in words if is_title(w)) / len(words)
+
+
+def _looks_like_sentence(text: str) -> bool:
+    t = text.strip()
+    if _BAD_PUNCT.search(t):
+        return True
+    if len(_EXCESS_COMMAS.findall(t)) >= 2:
+        return True
+    # If it ends with sentence punctuation and is not just a numbering marker, likely not a heading.
+    if _SENTENCE_END.search(t) and not re.match(r"^\s*\d+(?:\.\d+)*[.)]?\s*$", t):
+        return True
+    return False
+
+
+def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
+    """
+    Detect heading-like lines by FORM.
+
+    Rules (condensed):
+    - short
+    - begins with a marker (numbering / roman / Article/Section/Clause / §)
+    - OR looks like a title (ALL CAPS / Title Case), not sentence-like
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if len(raw) > max_len:
+        return None
+
+    # Marker-based headings
+    m = _RE_ARTICLE_ROMAN.match(raw) or _RE_ARTICLE_NUM.match(raw)
+    if m:
+        token = m.group(0).strip()
+        if _looks_like_sentence(raw):
+            return None
+        rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
+        return Heading(level=0, label=token.title(), title=rest, raw=raw)
+
+    m = _RE_SECTION_NUM.match(raw)
+    if m:
+        if _looks_like_sentence(raw):
+            return None
+        num = m.group("num")
+        rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
+        return Heading(level=1, label=f"Section {num}", title=rest, raw=raw)
+
+    m = _RE_CLAUSE_NUM.match(raw)
+    if m:
+        if _looks_like_sentence(raw):
+            return None
+        num = m.group("num")
+        rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
+        return Heading(level=1, label=f"Clause {num}", title=rest, raw=raw)
+
+    m = _RE_PARA_SIGN.match(raw)
+    if m:
+        if _looks_like_sentence(raw):
+            return None
+        num = m.group("num")
+        # treat like section-level
+        rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
+        return Heading(level=1, label=f"§ {num}", title=rest, raw=raw)
+
+    m = _RE_NUMBERED.match(raw)
+    if m and m.group("num"):
+        num = m.group("num")
+        tail = m.group("tail") or ""
+        title = (m.group("title") or "").strip()
+        title = title.strip(" \t-–—:") or ""
+        title = title or None
+        # Level is dot-depth (+1), plus one extra if it has (a)
+        level = num.count(".") + 2  # 2 means "subsection-ish"
+        if tail:
+            level += 1
+        if _looks_like_sentence(raw):
+            # Allow bare markers like "1." / "1.1" even if sentence end is "."
+            if re.match(r"^\s*\d+(?:\.\d+)*[.)]?\s*$", raw):
+                return Heading(level=level, label=num + tail, title=None, raw=raw)
+            return None
+        return Heading(level=level, label=num + tail, title=title, raw=raw)
+
+    # Unnumbered headings: ALL CAPS / Title Case and not sentence-like
+    if _looks_like_sentence(raw):
+        return None
+    words = raw.split()
+    if not (1 <= len(words) <= 12):
+        return None
+    if _RE_ALLCAPS_LINE.match(raw) and _uppercase_ratio(raw) >= 0.85:
+        return Heading(level=1, label=raw.title(), title=None, raw=raw)
+    if _titlecase_ratio(raw) >= 0.7:
+        return Heading(level=1, label=raw, title=None, raw=raw)
+
+    return None
+
+
+def is_heading(text: str, *, max_len: int = 120) -> bool:
+    return parse_heading(text, max_len=max_len) is not None
+
+

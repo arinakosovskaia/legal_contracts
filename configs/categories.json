@@ -1,0 +1,56 @@
+{
+  "version": "cuad_subset_v1",
+  "categories": [
+    {
+      "id": "change_of_control",
+      "name": "Change of Control",
+      "description": "Clauses addressing what happens if a party undergoes a change in ownership/control."
+    },
+    {
+      "id": "termination_for_convenience",
+      "name": "Termination for Convenience",
+      "description": "Clauses allowing termination without cause, often with notice."
+    },
+    {
+      "id": "anti_assignment",
+      "name": "Anti-Assignment",
+      "description": "Restrictions on assigning the agreement or transferring rights/obligations."
+    },
+    {
+      "id": "limitation_of_liability",
+      "name": "Limitation of Liability",
+      "description": "Caps or limits on a party's liability."
+    },
+    {
+      "id": "indemnification",
+      "name": "Indemnification",
+      "description": "Obligations to indemnify/defend another party."
+    },
+    {
+      "id": "governing_law",
+      "name": "Governing Law",
+      "description": "Which jurisdiction's law governs the agreement."
+    },
+    {
+      "id": "confidentiality",
+      "name": "Confidentiality",
+      "description": "Obligations to keep information confidential."
+    },
+    {
+      "id": "non_solicit",
+      "name": "Non-Solicit",
+      "description": "Restrictions on soliciting or hiring the other party's employees/customers."
+    },
+    {
+      "id": "non_compete",
+      "name": "Non-Compete",
+      "description": "Restrictions on competing activities during/after the agreement."
+    },
+    {
+      "id": "ip_ownership",
+      "name": "Intellectual Property Ownership",
+      "description": "Who owns IP created/used under the agreement."
+    }
+  ]
+}
+

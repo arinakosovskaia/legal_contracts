@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contract Red-Flag Detector (Demo)</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+      .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; max-width: 1100px; }
+      .muted { color: #666; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #eee; padding: 8px; vertical-align: top; }
+      th { background: #fafafa; position: sticky; top: 0; }
+      .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ccc; }
+      .high { background: #ffe5e5; border-color: #ffb3b3; }
+      .medium { background: #fff0d6; border-color: #ffd399; }
+      .low { background: #e9f6ff; border-color: #b3dcff; }
+      pre { white-space: pre-wrap; word-break: break-word; }
+      button { cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h2>Contract Red-Flag Detector (Demo)</h2>
+    <p class="muted">Upload a PDF. The backend parses it into sections + sliding windows and runs a red-flag classifier with CUAD-based few-shot examples.</p>
+
+    <div class="card" style="margin-bottom: 24px;">
+      <h3>How to use (demo)</h3>
+      <ol>
+        <li>Click <b>Choose file</b> and select a PDF contract.</li>
+        <li>Click <b>Upload & Analyze</b>.</li>
+        <li>Wait until status becomes <b>done</b>. The table will appear automatically.</li>
+        <li>Click <b>Download JSON</b> to export the result.</li>
+      </ol>
+      <p class="muted">
+        Limits are configurable via <code>.env</code> (pages/paragraphs/file size). If the PDF exceeds limits, you will get a clear error.
+      </p>
+      <p class="muted">
+        API endpoints: <code>POST /upload</code>, <code>GET /job/&lt;id&gt;</code>, <code>GET /job/&lt;id&gt;/result</code>.
+      </p>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h3>Upload</h3>
+        <form id="uploadForm">
+          <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
+          <button type="submit">Upload & Analyze</button>
+        </form>
+        <p id="jobInfo" class="muted"></p>
+        <p id="jobStatus"></p>
+        <progress id="jobProgress" value="0" max="100" style="width: 100%; display: none;"></progress>
+        <p>
+          <button id="downloadBtn" disabled>Download JSON</button>
+        </p>
+      </div>
+    </div>
+
+    <div id="result" class="card" style="display:none; margin-top: 24px;">
+      <h3>Summary</h3>
+      <pre id="summary"></pre>
+      <h3>Findings</h3>
+      <div style="max-height: 560px; overflow: auto;">
+        <table id="findingsTable">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Category</th>
+              <th>Confidence</th>
+              <th>Issue</th>
+              <th>What is wrong</th>
+              <th>Recommendation</th>
+              <th>Evidence</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="debug" style="display:none; margin-top: 24px;">
+        <h3>Debug traces</h3>
+        <p class="muted">Enable by setting <code>ENABLE_DEBUG_TRACES=1</code> in <code>.env</code>. This may include document text.</p>
+        <div id="debugTraces"></div>
+        <div id="debugWindows" style="margin-top:16px;"></div>
+      </div>
+    </div>
+
+    <script>
+      let currentJobId = null;
+      let pollTimer = null;
+
+      function el(id) { return document.getElementById(id); }
+
+      function setStatus(text) {
+        el("jobStatus").textContent = text;
+      }
+
+      async function uploadPdf(file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch("/upload", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
+        return data;
+      }
+
+      async function fetchJob(jobId) {
+        const res = await fetch(`/job/${jobId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Job fetch failed");
+        return data;
+      }
+
+      async function fetchResult(jobId) {
+        const res = await fetch(`/job/${jobId}/result`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Result fetch failed");
+        return data;
+      }
+
+      function renderResult(result) {
+        el("result").style.display = "block";
+        el("summary").textContent = JSON.stringify(result.summary, null, 2);
+
+        const tbody = el("findingsTable").querySelector("tbody");
+        tbody.innerHTML = "";
+        for (const f of result.findings || []) {
+          const tr = document.createElement("tr");
+          const sev = (f.severity || "low").toLowerCase();
+          tr.innerHTML = `
+            <td><span class="badge ${sev}">${sev}</span></td>
+            <td>${escapeHtml(f.category_name || f.category_id || "")}</td>
+            <td>${Number(f.confidence ?? 0).toFixed(2)}</td>
+            <td>${escapeHtml(f.issue_title || "")}</td>
+            <td>${escapeHtml(f.what_is_wrong || "")}</td>
+            <td>${escapeHtml(f.recommendation || "")}</td>
+            <td><pre>${escapeHtml(f.evidence_quote || "")}</pre></td>
+            <td>p.${f.location?.page ?? "?"}, ¶${f.location?.paragraph_index ?? "?"}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+
+        const traces = result?.meta?.debug?.paragraph_traces || null;
+        const windows = result?.meta?.debug?.window_traces || null;
+        const dbg = el("debug");
+        const dbgBox = el("debugTraces");
+        const dbgWin = el("debugWindows");
+        if (Array.isArray(traces) && traces.length) {
+          dbg.style.display = "block";
+          dbgBox.innerHTML = "";
+          for (const t of traces) {
+            const details = document.createElement("details");
+            details.style.margin = "10px 0";
+            const s1 = t.stage1 ? JSON.stringify(t.stage1, null, 2) : "";
+            const runs = Array.isArray(t.stage2_runs) ? t.stage2_runs : [];
+            details.innerHTML = `
+              <summary>p.${t.page}, ¶${t.paragraph_index} — ${escapeHtml(t.section_path || "")} — stage1_error=${escapeHtml(t.stage1_error ?? "null")} stage2_error=${escapeHtml(t.stage2_error ?? "null")}</summary>
+              <div style="margin-top: 8px;">
+                <div><b>Section path</b></div>
+                <pre>${escapeHtml(t.section_path || "")}</pre>
+                <div><b>Paragraph text</b></div>
+                <pre>${escapeHtml(t.paragraph_text || "")}</pre>
+                <div><b>Stage1 parsed</b></div>
+                <pre>${escapeHtml(s1)}</pre>
+                <div><b>Stage1 raw</b></div>
+                <pre>${escapeHtml(t.stage1_raw || "")}</pre>
+                <div><b>Stage2 runs (${runs.length})</b></div>
+                ${runs.map(r => `
+                  <details style="margin: 6px 0 0 0;">
+                    <summary>category_id=${escapeHtml(r.category_id || "")} stage2_error=${escapeHtml(r.stage2_error ?? "null")}</summary>
+                    <div style="margin-top: 6px;">
+                      <div><b>Stage1 (this category)</b></div>
+                      <pre>${escapeHtml(JSON.stringify(r.stage1 || {}, null, 2))}</pre>
+                      <div><b>Stage2 parsed</b></div>
+                      <pre>${escapeHtml(JSON.stringify(r.stage2 || {}, null, 2))}</pre>
+                      <div><b>Stage2 raw</b></div>
+                      <pre>${escapeHtml(r.stage2_raw || "")}</pre>
+                    </div>
+                  </details>
+                `).join("")}
+              </div>
+            `;
+            dbgBox.appendChild(details);
+          }
+        } else {
+          dbgBox.innerHTML = "";
+        }
+
+        if (Array.isArray(windows) && windows.length) {
+          dbg.style.display = "block";
+          dbgWin.innerHTML = "<h3>Debug traces (per window)</h3>";
+          for (const w of windows) {
+            const d = document.createElement("details");
+            d.style.margin = "10px 0";
+            d.innerHTML = `
+              <summary>${escapeHtml(w.window_id || "")} — ${escapeHtml(w.section_path || "")} — paragraphs=${escapeHtml(JSON.stringify(w.paragraph_indices || []))}</summary>
+              <div style="margin-top: 8px;">
+                <div><b>Parsed</b></div>
+                <pre>${escapeHtml(JSON.stringify(w.parsed || {}, null, 2))}</pre>
+                <div><b>Final prompt (system)</b></div>
+                <pre>${escapeHtml(w.prompt_system || "")}</pre>
+                <div><b>Final prompt (user)</b></div>
+                <pre>${escapeHtml(w.prompt_user || "")}</pre>
+                <div><b>Raw output</b></div>
+                <pre>${escapeHtml(w.raw_output || "")}</pre>
+                <div><b>TEXT CHUNK (truncated)</b></div>
+                <pre>${escapeHtml(w.text_chunk || "")}</pre>
+              </div>
+            `;
+            dbgWin.appendChild(d);
+          }
+        } else {
+          dbgWin.innerHTML = "";
+          if (!(Array.isArray(traces) && traces.length)) {
+            dbg.style.display = "none";
+          }
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function startPolling(jobId) {
+        if (pollTimer) clearInterval(pollTimer);
+        el("jobProgress").style.display = "block";
+        pollTimer = setInterval(async () => {
+          try {
+            const job = await fetchJob(jobId);
+            el("jobProgress").value = job.progress ?? 0;
+            setStatus(`Status: ${job.status} | Stage: ${job.stage ?? "-"} | Progress: ${job.progress ?? 0}%`);
+            if (job.status === "done") {
+              clearInterval(pollTimer);
+              const result = await fetchResult(jobId);
+              renderResult(result);
+              el("downloadBtn").disabled = false;
+            }
+            if (job.status === "failed") {
+              clearInterval(pollTimer);
+              setStatus(`Failed: ${job.error || "Unknown error"}`);
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }, 1200);
+      }
+
+      el("uploadForm").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const file = el("pdfFile").files[0];
+        if (!file) return;
+        el("downloadBtn").disabled = true;
+        el("result").style.display = "none";
+        setStatus("Uploading...");
+        try {
+          const data = await uploadPdf(file);
+          currentJobId = data.job_id;
+          el("jobInfo").textContent = `Job ID: ${currentJobId}`;
+          setStatus(`Queued. Limits: pages<=${data.limits.max_pages}, paragraphs<=${data.limits.max_paragraphs}, file<=${data.limits.max_file_mb}MB`);
+          startPolling(currentJobId);
+        } catch (e) {
+          setStatus(String(e));
+        }
+      });
+
+      el("downloadBtn").addEventListener("click", async () => {
+        if (!currentJobId) return;
+        const result = await fetchResult(currentJobId);
+        const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `result_${currentJobId}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    </script>
+  </body>
+</html>
+
