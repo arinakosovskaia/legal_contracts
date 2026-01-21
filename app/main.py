@@ -5,19 +5,20 @@ import json
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from .headings import parse_heading, Heading
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from .aggregate import compute_summary, dedupe_findings
 from .fewshot import cuad_file_meta, load_or_build_fewshot, resolve_cuad_json_path
-from .llm import LLMConfig, LLMRunner, load_categories_payload
+from .llm import LLMConfig, LLMRunner, load_categories_payload, normalize_llm_text
 from .models import (
     Finding,
     JobStatus,
@@ -47,6 +48,9 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 security = HTTPBasic()
 
+def _auth_enabled() -> bool:
+    return os.environ.get("ENABLE_AUTH", "1") == "1"
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -66,6 +70,8 @@ def get_limits() -> dict:
 
 
 def require_basic_auth(creds: HTTPBasicCredentials = Depends(security)) -> None:
+    if not _auth_enabled():
+        return
     user = os.environ.get("BASIC_AUTH_USER", "")
     pwd = os.environ.get("BASIC_AUTH_PASS", "")
     ok = secrets.compare_digest(creds.username or "", user) and secrets.compare_digest(creds.password or "", pwd)
@@ -81,6 +87,22 @@ CONFIGS_DIR = BASE_DIR / "configs"
 paths = Paths(base=DATA_DIR)
 
 app = FastAPI(title="Contract Red-Flag Detector (Demo)")
+
+# In-memory, ephemeral “live trace” storage (demo-friendly).
+# Keys are NOT persisted; this is for real-time UI visibility during a running job.
+_LIVE_TRACE: dict[str, dict] = {}
+_CANCELLED: set[str] = set()
+
+
+def _set_live_trace(job_id: str, payload: dict) -> None:
+    _LIVE_TRACE[job_id] = payload
+
+
+def _clear_live_trace(job_id: str) -> None:
+    _LIVE_TRACE.pop(job_id, None)
+
+def _is_cancelled(job_id: str) -> bool:
+    return job_id in _CANCELLED
 
 
 def _is_heading_paragraph(text: str) -> bool:
@@ -272,6 +294,12 @@ async def health(_: None = Depends(require_basic_auth)) -> JSONResponse:
 async def upload(
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    provider: str = Form("nebius"),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
+    model: str = Form(""),
+    enable_debug_paragraph: str = Form("0"),
+    enable_debug_window: str = Form("0"),
     _: None = Depends(require_basic_auth),
 ) -> UploadResponse:
     limits = get_limits()
@@ -306,8 +334,25 @@ async def upload(
         upload_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Failed to read PDF. Is it a valid, non-encrypted PDF?")
 
-    await create_job(paths.db, job_id, file.filename or "upload.pdf", upload_path)
-    background.add_task(process_job, job_id)
+    dbg_para = (enable_debug_paragraph or "").strip() in ("1", "true", "yes", "on")
+    dbg_win = (enable_debug_window or "").strip() in ("1", "true", "yes", "on")
+    await create_job(
+        paths.db,
+        job_id,
+        file.filename or "upload.pdf",
+        upload_path,
+        debug_paragraph_enabled=dbg_para,
+        debug_window_enabled=dbg_win,
+    )
+    llm_overrides = {
+        "provider": (provider or "").strip().lower(),
+        "api_key": (api_key or "").strip(),
+        "base_url": (base_url or "").strip(),
+        "model": (model or "").strip(),
+    }
+    # Note: we keep the API key in-memory only (passed to the background task),
+    # not persisted to SQLite or result.json.
+    background.add_task(process_job, job_id, llm_overrides)
 
     return UploadResponse(job_id=job_id, status=JobStatus.queued, limits=limits)
 
@@ -327,6 +372,42 @@ async def job_status(job_id: str, _: None = Depends(require_basic_auth)) -> JobS
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 
+@app.post("/job/{job_id}/cancel")
+async def cancel_job(job_id: str, _: None = Depends(require_basic_auth)) -> JSONResponse:
+    """
+    Request cooperative cancellation of a running job.
+    This does not kill in-flight network calls, but it stops scheduling further work.
+    """
+    row = await get_job(paths.db, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    status = row.get("status")
+    if status in (JobStatus.done.value, JobStatus.failed.value, JobStatus.cancelled.value):
+        return JSONResponse(content={"ok": True, "status": status})
+
+    _CANCELLED.add(job_id)
+    # Show immediate feedback in UI.
+    await update_job(paths.db, job_id, stage="cancelling", error="CANCEL_REQUESTED")
+    return JSONResponse(content={"ok": True, "status": "cancelling"})
+
+
+@app.get("/job/{job_id}/live-trace")
+async def job_live_trace(job_id: str, _: None = Depends(require_basic_auth)) -> JSONResponse:
+    """
+    Returns the current in-progress trace for a running job (single object),
+    intended to be polled by the UI and replaced each time.
+    """
+    row = await get_job(paths.db, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    enabled = bool(int(row.get("debug_window_enabled") or 0))
+    # Backwards compat: if old jobs only have debug_enabled=1, treat as enabled.
+    if not enabled and bool(int(row.get("debug_enabled") or 0)):
+        enabled = True
+    if not enabled:
+        return JSONResponse(content={"enabled": False, "trace": None})
+    return JSONResponse(content={"enabled": True, "trace": _LIVE_TRACE.get(job_id)})
+
 
 @app.get("/job/{job_id}/result")
 async def job_result(job_id: str, _: None = Depends(require_basic_auth)) -> JSONResponse:
@@ -341,14 +422,20 @@ async def job_result(job_id: str, _: None = Depends(require_basic_auth)) -> JSON
     return JSONResponse(content=json.loads(Path(result_path).read_text(encoding="utf-8")))
 
 
-async def process_job(job_id: str) -> None:
+async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None:
     limits = get_limits()
     row = await get_job(paths.db, job_id)
     if not row:
         return
     upload_path = Path(row["upload_path"])
+    enable_debug_paragraph = False
+    enable_debug_window = False
     try:
         LOGGER.info("Job %s started: %s", job_id, upload_path.name)
+        if _is_cancelled(job_id):
+            await update_job(paths.db, job_id, status=JobStatus.cancelled, stage="cancelled", progress=100, error="CANCELLED")
+            return
+        # live trace is window-level only (stores prompt/output), so we only fill it if window debug is enabled.
         await update_job(paths.db, job_id, status=JobStatus.running, stage="parse", progress=0, started_at=datetime.now(timezone.utc))
         paragraphs, page_count = parse_pdf_to_paragraphs(
             upload_path,
@@ -365,16 +452,28 @@ async def process_job(job_id: str) -> None:
             paragraph_count=len(paragraphs),
         )
 
-        # Provider selection (demo): prefer Nebius if configured, else OpenAI.
+        # Provider selection: allow per-job overrides from the UI (preferred),
+        # then fall back to environment variables.
         base_url: Optional[str] = None
         message_mode = "string"
-        api_key = os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if os.environ.get("NEBIUS_API_KEY"):
-            base_url = os.environ.get("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
+        overrides = llm_overrides or {}
+        provider = (overrides.get("provider") or "").strip().lower()
+        api_key = (overrides.get("api_key") or "").strip() or (os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY") or "")
+        chosen_model = (overrides.get("model") or "").strip()
+        override_base_url = (overrides.get("base_url") or "").strip()
+
+        if provider == "openai":
+            base_url = None
+            message_mode = "string"
+        else:
+            # default to Nebius if not specified
+            provider = "nebius"
+            base_url = override_base_url or os.environ.get("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
             # Nebius TokenFactory expects content as a list of text parts (matches their examples).
             message_mode = "parts"
+
         if not api_key:
-            raise RuntimeError("NEBIUS_API_KEY or OPENAI_API_KEY is required")
+            raise RuntimeError("API key required. Provide it in the UI (preferred) or set NEBIUS_API_KEY / OPENAI_API_KEY.")
         cats_payload = load_categories_payload(
             csv_path=DATA_DIR / "category_descriptions.csv",
             json_path=CONFIGS_DIR / "categories.json",
@@ -416,7 +515,7 @@ async def process_job(job_id: str) -> None:
                 api_key=api_key,
                 base_url=base_url,
                 model_stage1=os.environ.get("OPENAI_MODEL_STAGE1", "gpt-5-nano"),
-                model_stage2=os.environ.get("OPENAI_MODEL_STAGE2", "gpt-5-mini"),
+                model_stage2=chosen_model or os.environ.get("OPENAI_MODEL_STAGE2", "gpt-5-mini"),
                 max_concurrency=limits["max_llm_concurrency"],
                 stage1_include_descriptions=os.environ.get("STAGE1_INCLUDE_DESCRIPTIONS", "0") == "1",
                 message_content_mode=message_mode,
@@ -425,7 +524,12 @@ async def process_job(job_id: str) -> None:
             fewshot_by_category=fewshot,
         )
 
-        enable_debug = os.environ.get("ENABLE_DEBUG_TRACES", "0") == "1"
+        enable_debug_paragraph = bool(int(row.get("debug_paragraph_enabled") or 0))
+        enable_debug_window = bool(int(row.get("debug_window_enabled") or 0))
+        # Backwards compat: if old jobs only have debug_enabled=1, enable both.
+        if bool(int(row.get("debug_enabled") or 0)) and not (enable_debug_paragraph or enable_debug_window):
+            enable_debug_paragraph = True
+            enable_debug_window = True
         stage1_max_categories = int(os.environ.get("STAGE1_MAX_CATEGORIES", "10"))
         t_router = float(os.environ.get("T_ROUTER", "0.3"))
         router_topk = int(os.environ.get("ROUTER_TOPK_PROBS", "15"))
@@ -433,17 +537,27 @@ async def process_job(job_id: str) -> None:
         debug_by_idx: dict[int, dict] = {}
 
         # Initialize debug traces for EVERY paragraph up-front.
-        if enable_debug:
+        if enable_debug_paragraph:
             for p in paragraphs:
+                is_heading_para = _is_heading_paragraph(p.text)
                 trace = {
                     "page": p.page,
                     "paragraph_index": p.paragraph_index,
                     "paragraph_text": p.text,
                     "section_path": "",
+                    "kind": "heading" if is_heading_para else "paragraph",
+                    "note": (
+                        "Heading-only paragraph (section title). Not sent to the classifier."
+                        if is_heading_para
+                        else None
+                    ),
+                    "covered_by_windows": [],
                     "stage1": {"categories": []},
                     "stage1_raw": "",
-                    "stage1_error": None,
-                    "stage2_error": None,
+                    # Note: in SINGLE_CLASSIFIER mode we primarily use window-level traces.
+                    # We keep paragraph traces for parser transparency and section-path debugging.
+                    "stage1_error": "SKIPPED_HEADING" if is_heading_para else None,
+                    "stage2_error": "SKIPPED_HEADING" if is_heading_para else None,
                     "stage2_runs": [],
                 }
                 debug_traces.append(trace)
@@ -462,7 +576,7 @@ async def process_job(job_id: str) -> None:
                     stack.pop()
                 stack.append(h)
             path_by_idx[p.paragraph_index] = _heading_stack_to_path(stack)
-            if enable_debug:
+            if enable_debug_paragraph:
                 t = debug_by_idx.get(p.paragraph_index)
                 if t is not None:
                     t["section_path"] = path_by_idx[p.paragraph_index]
@@ -591,31 +705,101 @@ async def process_job(job_id: str) -> None:
 
             async def classify_window(sec_body: list[Paragraph], start_i: int, end_i: int, *, window_id: str) -> None:
                 chunk_paras = sec_body[start_i:end_i]
-                text_chunk = "\n\n".join(p.text for p in chunk_paras).strip()
+                text_chunk_raw = "\n\n".join(p.text for p in chunk_paras).strip()
+                text_chunk = normalize_llm_text(text_chunk_raw)
                 if not text_chunk:
                     return
+                if _is_cancelled(job_id):
+                    return
                 spath = path_by_idx.get(chunk_paras[0].paragraph_index, "")
+                if enable_debug_paragraph:
+                    for p in chunk_paras:
+                        t = debug_by_idx.get(p.paragraph_index)
+                        if t is not None:
+                            lst = t.get("covered_by_windows")
+                            if isinstance(lst, list) and window_id not in lst:
+                                lst.append(window_id)
+
+                if enable_debug_window:
+                    _set_live_trace(
+                        job_id,
+                        {
+                            "phase": "calling_llm",
+                            "ts": time.time(),
+                            "window_id": window_id,
+                            "section_path": spath,
+                            "paragraph_indices": [p.paragraph_index for p in chunk_paras],
+                            "processing": True,
+                            "context_prefix": spath,
+                            "text_chunk": text_chunk[:6000],
+                        },
+                    )
                 out, raw, prompt = await llm.classify_redflags_for_chunk(
                     text_chunk=text_chunk,
                     section_path=spath,
                     max_findings=2,
-                    return_prompt=enable_debug,
+                    return_prompt=enable_debug_window,
                 )
+                if _is_cancelled(job_id):
+                    return
 
-                if enable_debug:
+                if enable_debug_window:
                     prompt_user = (prompt or {}).get("user", "")
                     prompt_system = (prompt or {}).get("system", "")
+                    sections = (prompt or {}).get("sections") if isinstance(prompt, dict) else None
+                    # Fall back to extracting minimal parts if sections are not present.
+                    ctx = ""
+                    chunk_for_llm = ""
+                    fewshot = ""
+                    defs = ""
+                    if isinstance(sections, dict):
+                        ctx = str(sections.get("context_prefix") or "")
+                        chunk_for_llm = str(sections.get("text_chunk") or "")
+                        fewshot = str(sections.get("fewshot_examples") or "")
+                        defs = str(sections.get("category_definitions") or "")
+                    head_n = 9000
+                    tail_n = 9000
+                    prompt_user_head = prompt_user[:head_n]
+                    prompt_user_tail = prompt_user[-tail_n:] if len(prompt_user) > head_n else ""
                     window_traces.append(
                         {
                             "window_id": window_id,
                             "section_path": spath,
                             "paragraph_indices": [p.paragraph_index for p in chunk_paras],
                             "text_chunk": text_chunk[:8000],
+                            "text_chunk_raw": text_chunk_raw[:8000],
                             "prompt_system": prompt_system[:2000],
-                            "prompt_user": prompt_user[:20000],
+                            "prompt_user_len": len(prompt_user),
+                            "prompt_user_head": prompt_user_head,
+                            "prompt_user_tail": prompt_user_tail,
+                            "prompt_parts": {
+                                "context_prefix": ctx,
+                                "text_chunk": chunk_for_llm[:8000],
+                                "fewshot": fewshot[:8000],
+                                "category_definitions": defs[:4000],
+                            },
                             "raw_output": (raw or "")[:8000],
                             "parsed": out.model_dump(),
                         }
+                    )
+                    _set_live_trace(
+                        job_id,
+                        {
+                            "phase": "llm_returned",
+                            "ts": time.time(),
+                            "window_id": window_id,
+                            "section_path": spath,
+                            "paragraph_indices": [p.paragraph_index for p in chunk_paras],
+                            "processing": False,
+                            "prompt_system": (prompt_system or "")[:2000],
+                            "prompt_user_len": len(prompt_user or ""),
+                            "context_prefix": ctx or spath,
+                            "category_definitions": defs[:4000],
+                            "fewshot": fewshot[:8000],
+                            "text_chunk": chunk_for_llm[:8000] or text_chunk[:8000],
+                            "raw_output": (raw or "")[:6000],
+                            "parsed": out.model_dump(),
+                        },
                     )
 
                 for j, f in enumerate(out.findings):
@@ -646,7 +830,7 @@ async def process_job(job_id: str) -> None:
                         )
                     )
 
-            window_tasks = []
+            window_tasks: list[asyncio.Task] = []
             for sec in sections:
                 sec_body = [p for p in sec if not _is_heading_paragraph(p.text)]
                 if not sec_body:
@@ -686,11 +870,24 @@ async def process_job(job_id: str) -> None:
                     start_i = exp_s
                     end_i = exp_e
                     window_id = f"w_{sec_body[s].paragraph_index:04d}_{sec_body[min(e-1, len(sec_body)-1)].paragraph_index:04d}"
-                    window_tasks.append(classify_window(sec_body, start_i, end_i, window_id=window_id))
+                    window_tasks.append(asyncio.create_task(classify_window(sec_body, start_i, end_i, window_id=window_id)))
 
             done = 0
             for coro in asyncio.as_completed(window_tasks):
-                await coro
+                if _is_cancelled(job_id):
+                    for t in window_tasks:
+                        if not t.done():
+                            t.cancel()
+                    await update_job(paths.db, job_id, status=JobStatus.cancelled, stage="cancelled", progress=100, error="CANCELLED")
+                    if enable_debug_window:
+                        _clear_live_trace(job_id)
+                    return
+                try:
+                    await coro
+                except Exception as exc:
+                    if enable_debug_window:
+                        _set_live_trace(job_id, {"phase": "error", "ts": time.time(), "error": str(exc)[:2000]})
+                    raise
                 done += 1
                 if window_tasks:
                     prog = 55 + int(40 * (done / max(1, len(window_tasks))))
@@ -827,6 +1024,17 @@ async def process_job(job_id: str) -> None:
         findings = dedupe_findings(findings)
         summary = compute_summary(findings)
         LOGGER.info("Job %s findings=%s risk_score=%s", job_id, len(findings), summary.risk_score)
+        # Keep debug output stable and easy to read: sort by document order.
+        if enable_debug_window and window_traces:
+            def _win_key(w: dict) -> tuple[int, str]:
+                idxs = w.get("paragraph_indices") or []
+                try:
+                    first = int(min(idxs)) if idxs else 10**9
+                except Exception:
+                    first = 10**9
+                return (first, str(w.get("window_id") or ""))
+
+            window_traces.sort(key=_win_key)
         result = ResultPayload(
             job_id=job_id,
             document=ResultDocument(
@@ -842,7 +1050,8 @@ async def process_job(job_id: str) -> None:
                 models={"classifier": llm.cfg.model_stage2} if single_classifier else {"stage_1": llm.cfg.model_stage1, "stage_2": llm.cfg.model_stage2},
                 debug=(
                     {
-                        "enabled": enable_debug,
+                        "enabled_paragraph": enable_debug_paragraph,
+                        "enabled_window": enable_debug_window,
                         "paragraph_traces": debug_traces,
                         "window_traces": window_traces,
                         "cuad_qa_json": cuad_meta,
@@ -854,7 +1063,7 @@ async def process_job(job_id: str) -> None:
                             "context_window": fewshot_window,
                         },
                     }
-                    if enable_debug
+                    if (enable_debug_paragraph or enable_debug_window)
                     else None
                 ),
             ),
@@ -862,8 +1071,16 @@ async def process_job(job_id: str) -> None:
         out_path = job_result_path(paths, job_id)
         out_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         await update_job(paths.db, job_id, status=JobStatus.done, stage="done", progress=100, result_path=out_path)
+        if enable_debug_window:
+            _clear_live_trace(job_id)
+        _CANCELLED.discard(job_id)
         LOGGER.info("Job %s done", job_id)
     except Exception as e:
         LOGGER.exception("Job %s failed", job_id)
+        if enable_debug_window:
+            _set_live_trace(job_id, {"phase": "failed", "ts": time.time(), "error": str(e)[:2000]})
         await update_job(paths.db, job_id, status=JobStatus.failed, stage="failed", progress=100, error=str(e))
+        if enable_debug_window:
+            _clear_live_trace(job_id)
+        _CANCELLED.discard(job_id)
 

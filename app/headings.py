@@ -21,6 +21,11 @@ _RE_ALLCAPS_LINE = re.compile(r"^[A-Z0-9][A-Z0-9 .,:;()'\"/\\-]{2,}$")
 _SENTENCE_END = re.compile(r"[.!?]$")
 _BAD_PUNCT = re.compile(r"[;]")
 _EXCESS_COMMAS = re.compile(r",")
+_DOT_SPACE = re.compile(r"\.\s+\w+")
+_MODAL_VERBS = re.compile(
+    r"\b(shall|will|must|may|may not|shall not|will not|agrees?|warrants?|represents?)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,17 @@ def _looks_like_sentence(text: str) -> bool:
         return True
     if len(_EXCESS_COMMAS.findall(t)) >= 2:
         return True
+    # If it contains modal verbs, it's usually clause text, not a heading.
+    # (Headings rarely say "shall/will/must".)
+    if _MODAL_VERBS.search(t):
+        return True
+    # Multiple sentence-like segments (e.g., "6.1 Assignment. No assignment ...").
+    # We only flag it if there's enough text after the first period to look like a sentence,
+    # to avoid false positives for abbreviations like "U.S.".
+    if _DOT_SPACE.search(t) and ". " in t:
+        after = t.split(". ", 1)[1]
+        if len(after.split()) >= 3:
+            return True
     # If it ends with sentence punctuation and is not just a numbering marker, likely not a heading.
     if _SENTENCE_END.search(t) and not re.match(r"^\s*\d+(?:\.\d+)*[.)]?\s*$", t):
         return True

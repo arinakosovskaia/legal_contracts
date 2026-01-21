@@ -15,6 +15,65 @@ _SENTENCE_END_RE = re.compile(r"[.!?]$")
 _BULLET_LETTER_O_RE = re.compile(r"^\s*o\s+", re.IGNORECASE)
 
 
+def _bullet_kind(line: str) -> str:
+    """
+    Coarse bullet style detector for page-break merging.
+    """
+    s = (line or "").lstrip()
+    if re.match(r"^(?:[-*•])\s+", s):
+        return "symbol"
+    if re.match(r"^\(?\d{1,3}[\).\]]\s+", s):
+        return "number"
+    if re.match(r"^[A-Za-z][\).\]]\s+", s):
+        return "letter"
+    return ""
+
+
+def _page_break_merge_separator(prev_para: str, next_para: str) -> str:
+    """
+    Returns the separator to merge with (" " or "\\n"), or "" if not merging.
+    """
+    prev = (prev_para or "").strip()
+    nxt = (next_para or "").strip()
+    if not prev or not nxt:
+        return ""
+    # Don't merge headings (use shared heading heuristics).
+    if is_heading(prev, max_len=160) or is_heading(nxt, max_len=160):
+        return ""
+    # Don't merge list blocks that START on the next page (keep them separate).
+    if "\n" in nxt:
+        return ""
+
+    # If prev is a list block, allow continuing the list across pages:
+    # - either continuation text ("based on" -> "claims ...") => join with space
+    # - or a new bullet item (A-D then E) => join with newline (if bullet style matches)
+    if "\n" in prev:
+        if _BULLET_RE.match(nxt):
+            prev_first = (prev.splitlines()[0] or "").strip()
+            k1 = _bullet_kind(prev_first)
+            k2 = _bullet_kind(nxt)
+            if k1 and k2 and k1 == k2:
+                return "\n"
+            return ""
+        last_line = (prev.splitlines()[-1] or "").strip()
+        if not last_line:
+            return ""
+        if _SENTENCE_END_RE.search(last_line):
+            return ""
+        if re.match(r"^[a-z,;:\)\]]", nxt):
+            return " "
+        return ""
+
+    # Normal paragraph merge heuristics.
+    if _BULLET_RE.match(nxt):
+        return ""
+    if _SENTENCE_END_RE.search(prev):
+        return ""
+    if re.match(r"^[a-z,;:\)\]]", nxt):
+        return " "
+    return ""
+
+
 def _should_merge_continuation(prev_para: str, next_para: str) -> bool:
     prev = (prev_para or "").strip()
     nxt = (next_para or "").strip()
@@ -51,6 +110,45 @@ def _merge_continuation_paragraphs(paras: list[str]) -> list[str]:
     def is_heading_like(s: str) -> bool:
         return parse_heading(s, max_len=160) is not None
 
+    def split_inline_heading_body(s: str) -> list[str]:
+        """
+        Split cases where a numbered/section heading and its first sentence are on the same line, e.g.:
+        - "6.1 Assignment. No assignment of this Agreement ..."
+        into:
+        - "6.1 Assignment"
+        - "No assignment of this Agreement ..."
+        This prevents us from losing body text when we later exclude heading paragraphs from LLM windows.
+        """
+        t = (s or "").strip()
+        if not t:
+            return [s]
+        patterns = [
+            re.compile(r"^(?P<num>\d+(?:\.\d+){0,6})\s+(?P<title>[^.]{1,80})\.\s+(?P<body>.+)$"),
+            re.compile(
+                r"^(?P<prefix>(?:SECTION|Section|CLAUSE|Clause)\s+\d+(?:\.\d+){0,6})\s+(?P<title>[^.]{1,80})\.\s+(?P<body>.+)$"
+            ),
+            re.compile(r"^(?P<prefix>§\s*\d+(?:\.\d+){0,6})\s+(?P<title>[^.]{1,80})\.\s+(?P<body>.+)$"),
+        ]
+        for pat in patterns:
+            m = pat.match(t)
+            if not m:
+                continue
+            num = (m.group("num") if "num" in m.groupdict() else "").strip()
+            prefix = (m.group("prefix") if "prefix" in m.groupdict() else "").strip()
+            title = (m.group("title") or "").strip()
+            body = (m.group("body") or "").strip()
+            heading = f"{prefix} {title}".strip() if prefix else f"{num} {title}".strip()
+            # Only split if the heading-part is actually heading-like.
+            if not heading or not body:
+                continue
+            if parse_heading(heading, max_len=160) is None:
+                continue
+            # Avoid splitting if the "body" is too short (likely false positive).
+            if len(body.split()) < 4:
+                continue
+            return [heading, body]
+        return [s]
+
     def is_short_heading_fragment(s: str) -> bool:
         t = (s or "").strip()
         if not t:
@@ -68,6 +166,12 @@ def _merge_continuation_paragraphs(paras: list[str]) -> list[str]:
         return bool(re.search(r"\b(OF|AND|OR|TO|FOR|IN|ON|WITH|WITHOUT|UNDER)\s*$", t))
 
     out: list[str] = []
+    # First, split "heading + body" lines into two paragraphs to keep body text.
+    expanded: list[str] = []
+    for p in paras:
+        expanded.extend(split_inline_heading_body(p))
+    paras = expanded
+
     i = 0
     while i < len(paras):
         cur = paras[i]
@@ -76,20 +180,24 @@ def _merge_continuation_paragraphs(paras: list[str]) -> list[str]:
             # Broken heading merge:
             # e.g. "3. LIMITATION OF" + "LIABILITY"  -> "3. LIMITATION OF LIABILITY"
             if is_heading_like(cur) and is_heading_like(nxt) and is_short_heading_fragment(cur):
-                merged = (cur.rstrip() + " " + nxt.lstrip()).strip()
-                # Optionally merge a 3rd line if it's also heading-like and we still look like a fragment.
-                if i + 2 < len(paras):
-                    nxt2 = paras[i + 2]
-                    if (ends_with_connector(merged) or is_short_heading_fragment(merged)) and is_heading_like(nxt2):
-                        merged2 = (merged.rstrip() + " " + nxt2.lstrip()).strip()
-                        if is_heading_like(merged2):
-                            out.append(merged2)
-                            i += 3
-                            continue
-                if is_heading_like(merged):
-                    out.append(merged)
-                    i += 2
-                    continue
+                # Do NOT merge if the next line looks like a new numbered/Section heading (e.g. "6.1 Assignment").
+                if re.match(r"^\s*(?:\d+(?:\.\d+)*|SECTION\s+\d|CLAUSE\s+\d|ARTICLE\s+|§\s*\d)\b", nxt, re.IGNORECASE):
+                    pass
+                else:
+                    merged = (cur.rstrip() + " " + nxt.lstrip()).strip()
+                    # Optionally merge a 3rd line if it's also heading-like and we still look like a fragment.
+                    if i + 2 < len(paras):
+                        nxt2 = paras[i + 2]
+                        if (ends_with_connector(merged) or is_short_heading_fragment(merged)) and is_heading_like(nxt2):
+                            merged2 = (merged.rstrip() + " " + nxt2.lstrip()).strip()
+                            if is_heading_like(merged2):
+                                out.append(merged2)
+                                i += 3
+                                continue
+                    if is_heading_like(merged):
+                        out.append(merged)
+                        i += 2
+                        continue
 
             # Intro line that leads into a list block (we keep list newlines).
             if cur.strip().endswith(":") and "\n" in nxt:
@@ -200,26 +308,7 @@ def _should_merge_across_pages(prev_para: str, next_para: str) -> bool:
     Detect page-break continuation: last paragraph on a page continues on the next page.
     This is a best-effort heuristic (demo).
     """
-    prev = (prev_para or "").strip()
-    nxt = (next_para or "").strip()
-    if not prev or not nxt:
-        return False
-    # Don't merge list blocks or headings.
-    if "\n" in prev or "\n" in nxt:
-        return False
-    # Don't merge headings (use shared heading heuristics).
-    if is_heading(prev, max_len=160) or is_heading(nxt, max_len=160):
-        return False
-    if _BULLET_RE.match(nxt):
-        return False
-    # If prev clearly ends a sentence, don't merge.
-    if _SENTENCE_END_RE.search(prev):
-        return False
-    # If next starts like a continuation (lowercase or punctuation), likely merge.
-    if re.match(r"^[a-z,;:\)\]]", nxt):
-        return True
-    # Otherwise be conservative.
-    return False
+    return bool(_page_break_merge_separator(prev_para, next_para))
 
 
 def _extract_layout_lines(page) -> list[tuple[float, float, str]]:
@@ -366,8 +455,9 @@ def parse_pdf_to_paragraphs(
                 page_paras = _split_into_paragraphs(text)
             # Merge page-break continuations (optional but enabled by default for better UX).
             if paragraphs and page_paras:
-                if _should_merge_across_pages(paragraphs[-1].text, page_paras[0]):
-                    paragraphs[-1].text = (paragraphs[-1].text.rstrip() + " " + page_paras[0].lstrip()).strip()
+                sep = _page_break_merge_separator(paragraphs[-1].text, page_paras[0])
+                if sep:
+                    paragraphs[-1].text = (paragraphs[-1].text.rstrip() + sep + page_paras[0].lstrip()).strip()
                     page_paras = page_paras[1:]
             for para in page_paras:
                 paragraphs.append(Paragraph(text=para, page=i, paragraph_index=para_idx))

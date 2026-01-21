@@ -28,6 +28,29 @@ T = TypeVar("T", bound=BaseModel)
 _JSON_START = re.compile(r"\{", re.MULTILINE)
 
 
+_MANY_NEWLINES = re.compile(r"\n{3,}")
+_TRAILING_WS = re.compile(r"[ \t]+\n")
+_PAGE_NUMBER_LINE = re.compile(r"^\s*-\s*\d+\s*-\s*$", re.MULTILINE)
+
+
+def normalize_llm_text(text: str) -> str:
+    """
+    Normalize noisy PDF-ish text before sending to an LLM.
+    Keeps content but reduces prompt bloat and improves legibility.
+    """
+    s = (text or "")
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    # Form-feed/page-break artefacts
+    s = s.replace("\x0c", "\n")
+    # Remove standalone page-number lines like "- 11 -"
+    s = _PAGE_NUMBER_LINE.sub("", s)
+    # Trim trailing spaces per-line
+    s = _TRAILING_WS.sub("\n", s)
+    # Collapse huge blank areas
+    s = _MANY_NEWLINES.sub("\n\n", s)
+    return s.strip()
+
+
 def extract_first_json_object(text: str) -> Optional[str]:
     if not text:
         return None
@@ -128,6 +151,7 @@ class LLMRunner:
         }
         # Build once per runner (keeps prompts stable and avoids repeated work).
         self._redflag_fewshot_block: str = self._build_redflag_fewshot_examples()
+        self._redflag_definitions_block: str = self._build_redflag_definitions_block()
 
     def _build_redflag_fewshot_examples(self) -> str:
         """
@@ -146,11 +170,16 @@ class LLMRunner:
         ]:
             cid = self.redflag_category_id_by_name.get(name, "")
             examples = (self.fewshot_by_category.get(cid) or [])[:2]
-            for ex in examples:
+            for ex_i, ex in enumerate(examples, start=1):
                 snippet = ex.get("clause", "")
                 evidence = ex.get("evidence", "")
+                question = ex.get("question", "")
                 if not snippet or not evidence or evidence not in snippet:
                     continue
+                snippet_clean = normalize_llm_text(snippet)
+                # Keep evidence check strict: if normalization breaks substring, fall back to original snippet.
+                if evidence not in snippet_clean:
+                    snippet_clean = snippet.strip()
                 # Minimal, category-grounded reasoning templates (few-shot only).
                 if name == "Termination For Convenience":
                     reasoning = [
@@ -184,9 +213,14 @@ class LLMRunner:
                     ]
 
                 blocks.append(
-                    "TEXT CHUNK:\n"
-                    f"{snippet}\n"
-                    "OUTPUT:\n"
+                    f"EXAMPLE {ex_i} (CUAD)\n"
+                    f"Category: {name}\n"
+                    + (f"Question: {question}\n" if question else "")
+                    + "TEXT CHUNK (excerpt; may start/end mid-sentence):\n"
+                    + "…\n"
+                    + f"{snippet_clean}\n"
+                    + "…\n"
+                    + "OUTPUT:\n"
                     + json.dumps(
                         {
                             "findings": [
@@ -199,15 +233,46 @@ class LLMRunner:
                 )
         return "\n".join(blocks).strip()
 
+    def _build_redflag_definitions_block(self) -> str:
+        """
+        Build a short category definitions block from CUAD `category_descriptions.csv`
+        (already loaded into `categories_payload`).
+        """
+        id_to_desc: dict[str, str] = {}
+        for c in self.categories_payload.get("categories", []):
+            cid = str(c.get("id", "")).strip()
+            if not cid:
+                continue
+            id_to_desc[cid] = str(c.get("description", "") or "").strip()
+
+        lines: list[str] = []
+        for name, cid in self.redflag_category_id_by_name.items():
+            desc = id_to_desc.get(cid, "")
+            if desc:
+                lines.append(f"- {name}: {desc}")
+            else:
+                lines.append(f"- {name}: (no description found in category_descriptions.csv)")
+        return "\n".join(lines).strip()
+
     def _build_redflag_prompt(
         self,
         *,
         text_chunk: str,
         section_path: str,
         max_findings: int,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict[str, Any]]:
         categories = list(self.redflag_category_id_by_name.keys())
         fewshot = self._redflag_fewshot_block
+        defs = self._redflag_definitions_block
+        header = (
+            "========================\n"
+            "FEW-SHOT EXAMPLES (from CUAD_v1.json; examples only, NOT the current document)\n"
+            "========================\n"
+        )
+        if fewshot:
+            fewshot_section = header + f"{fewshot}\n"
+        else:
+            fewshot_section = header + "(none available — few-shot cache is empty or disabled)\n"
         section_prefix = f"CONTEXT PREFIX: {section_path}\n\n" if section_path else ""
 
         system = "You are a legal clause classifier for red flag clause types. Output STRICT JSON only."
@@ -216,6 +281,9 @@ You are a legal clause classifier for “red flag” clause types.
 
 Knowing only the provided TEXT CHUNK, identify whether it contains any of these categories:
 {chr(10).join("- " + c for c in categories)}
+
+CURRENT DOCUMENT LOCATION (for the chunk you must classify):
+CONTEXT PREFIX: {section_path or "(none)"}
 
 You must return BOTH:
 1) the category (or categories) AND
@@ -233,9 +301,11 @@ Output JSON schema:
 {{"findings":[{{"category":"<one of the categories above>","evidence":"<verbatim quote from TEXT CHUNK>","reasoning":["<bullet>"]}}]}}
 
 ========================
-FEW-SHOT EXAMPLES (from CUAD_v1.json)
+CATEGORY DEFINITIONS (from category_descriptions.csv)
 ========================
-{fewshot}
+{defs}
+
+{fewshot_section}
 
 ========================
 NOW CLASSIFY THIS INPUT
@@ -244,7 +314,14 @@ NOW CLASSIFY THIS INPUT
 {text_chunk}
 OUTPUT JSON:
 """.strip()
-        return system, user
+        sections: dict[str, Any] = {
+            "context_prefix": section_path or "",
+            "text_chunk": text_chunk,
+            "category_definitions": defs,
+            "fewshot_examples": fewshot,
+            "fewshot_available": bool(fewshot),
+        }
+        return system, user, sections
 
     async def classify_redflags_for_chunk(
         self,
@@ -258,8 +335,9 @@ OUTPUT JSON:
         Single-classifier mode:
         classify one TEXT CHUNK and return up to 2 findings with verbatim evidence.
         """
-        system, user = self._build_redflag_prompt(
-            text_chunk=text_chunk,
+        text_chunk_clean = normalize_llm_text(text_chunk)
+        system, user, sections = self._build_redflag_prompt(
+            text_chunk=text_chunk_clean,
             section_path=section_path,
             max_findings=max_findings,
         )
@@ -269,11 +347,14 @@ OUTPUT JSON:
         cleaned: list[RedFlagFindingLLM] = []
         for f in out.findings[:max_findings]:
             # Evidence must be verbatim substring of the chunk.
-            if not f.evidence or f.evidence not in text_chunk:
+            if not f.evidence or f.evidence not in text_chunk_clean:
                 continue
             cleaned.append(f)
         out.findings = cleaned[:max_findings]
-        prompt = {"system": system, "user": user} if return_prompt else None
+        prompt: Optional[dict[str, str]] = None
+        if return_prompt:
+            # This dict is for debug only. It can include document text.
+            prompt = {"system": system, "user": user, "sections": sections}  # type: ignore[assignment]
         return out, raw, prompt
 
     def _build_messages(self, *, system: str, user: str) -> list[dict[str, Any]]:

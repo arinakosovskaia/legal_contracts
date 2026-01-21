@@ -22,7 +22,7 @@
   </head>
   <body>
     <h2>Contract Red-Flag Detector (Demo)</h2>
-    <p class="muted">Upload a PDF. The backend parses it into sections + sliding windows and runs a red-flag classifier with CUAD-based few-shot examples.</p>
+    <p class="muted">Upload a PDF. Enter your API key (Nebius/OpenAI) and choose a model. The backend parses into sections + sliding windows and runs a red-flag classifier with CUAD-based few-shot examples.</p>
 
     <div class="card" style="margin-bottom: 24px;">
       <h3>How to use (demo)</h3>
@@ -44,14 +44,60 @@
       <div class="card">
         <h3>Upload</h3>
         <form id="uploadForm">
+          <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+            <div>
+              <div class="muted" style="font-size:12px;">Provider</div>
+              <select id="provider" name="provider">
+                <option value="nebius" selected>Nebius (TokenFactory)</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+            <div>
+              <div class="muted" style="font-size:12px;">Model</div>
+              <select id="model" name="model"></select>
+            </div>
+            <div>
+              <div class="muted" style="font-size:12px;">Custom model (optional)</div>
+              <input id="modelCustom" type="text" placeholder="(optional) override selected model" style="min-width:420px;" />
+            </div>
+          </div>
+
+          <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+            <div>
+              <div class="muted" style="font-size:12px;">API key (not stored)</div>
+              <input id="apiKey" name="api_key" type="password" placeholder="Paste key here" style="min-width:420px;" />
+            </div>
+            <div id="baseUrlBox">
+              <div class="muted" style="font-size:12px;">Base URL (Nebius)</div>
+              <input id="baseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" style="min-width:420px;" />
+            </div>
+          </div>
+
+          <div style="margin-bottom:10px;">
+            <label class="muted" style="display:flex; gap:8px; align-items:center;">
+              <input id="enableDebugParagraph" type="checkbox" />
+              Debug per paragraph (parser output + section path)
+            </label>
+            <label class="muted" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+              <input id="enableDebugWindow" type="checkbox" />
+              Debug per window (LLM prompts + outputs + live trace). May include document text.
+            </label>
+          </div>
+
           <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
           <button type="submit">Upload & Analyze</button>
         </form>
         <p id="jobInfo" class="muted"></p>
         <p id="jobStatus"></p>
         <progress id="jobProgress" value="0" max="100" style="width: 100%; display: none;"></progress>
+        <div id="liveTrace" class="card" style="display:none; margin-top: 12px;">
+          <h3>Live trace (current LLM window)</h3>
+          <p class="muted">This updates during processing and replaces the previous trace. Enable by checking <b>Debug per window</b> before upload.</p>
+          <div id="liveTraceBox"></div>
+        </div>
         <p>
           <button id="downloadBtn" disabled>Download JSON</button>
+          <button id="cancelBtn" disabled style="margin-left:8px;">Stop</button>
         </p>
       </div>
     </div>
@@ -80,7 +126,7 @@
 
       <div id="debug" style="display:none; margin-top: 24px;">
         <h3>Debug traces</h3>
-        <p class="muted">Enable by setting <code>ENABLE_DEBUG_TRACES=1</code> in <code>.env</code>. This may include document text.</p>
+        <p class="muted">Enabled only if you checked <b>Debug per paragraph</b> and/or <b>Debug per window</b> before upload. This may include document text.</p>
         <div id="debugTraces"></div>
         <div id="debugWindows" style="margin-top:16px;"></div>
       </div>
@@ -99,6 +145,18 @@
       async function uploadPdf(file) {
         const fd = new FormData();
         fd.append("file", file);
+        const provider = (el("provider")?.value || "nebius");
+        const apiKey = (el("apiKey")?.value || "");
+        const baseUrl = (el("baseUrl")?.value || "");
+        const modelSel = (el("model")?.value || "");
+        const modelCustom = (el("modelCustom")?.value || "");
+        const model = modelCustom.trim() ? modelCustom.trim() : modelSel;
+        fd.append("provider", provider);
+        fd.append("api_key", apiKey);
+        fd.append("base_url", baseUrl);
+        fd.append("model", model);
+        fd.append("enable_debug_paragraph", el("enableDebugParagraph")?.checked ? "1" : "0");
+        fd.append("enable_debug_window", el("enableDebugWindow")?.checked ? "1" : "0");
         const res = await fetch("/upload", { method: "POST", body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
@@ -119,6 +177,68 @@
         return data;
       }
 
+      async function cancelJob(jobId) {
+        const res = await fetch(`/job/${jobId}/cancel`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Cancel failed");
+        return data;
+      }
+
+      async function fetchLiveTrace(jobId) {
+        const res = await fetch(`/job/${jobId}/live-trace`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Live trace fetch failed");
+        return data;
+      }
+
+      function renderLiveTrace(trace) {
+        const box = el("liveTraceBox");
+        if (!trace) {
+          box.innerHTML = "";
+          return;
+        }
+        const status = trace.processing ? "processing…" : "done";
+        const phase = trace.phase || "";
+        const ctx = trace.context_prefix || trace.section_path || "";
+        const chunk = trace.text_chunk || "";
+        const fewshot = trace.fewshot || "";
+        const defs = trace.category_definitions || "";
+        const parsed = trace.parsed ? JSON.stringify(trace.parsed, null, 2) : "";
+        const raw = trace.raw_output || "";
+
+        box.innerHTML = `
+          <div class="muted" style="margin-bottom:8px;"><b>Status:</b> ${escapeHtml(status)} <span class="muted">(phase=${escapeHtml(phase)})</span></div>
+          <details open style="margin: 6px 0;">
+            <summary><b>CONTEXT PREFIX</b></summary>
+            <pre>${escapeHtml(ctx)}</pre>
+          </details>
+          <details open style="margin: 6px 0;">
+            <summary><b>TEXT CHUNK</b></summary>
+            <pre>${escapeHtml(chunk)}</pre>
+          </details>
+          <details style="margin: 6px 0;">
+            <summary><b>CATEGORY DEFINITIONS</b></summary>
+            <pre>${escapeHtml(defs)}</pre>
+          </details>
+          <details style="margin: 6px 0;">
+            <summary><b>FEW-SHOT</b> <span class="muted">(from CUAD_v1.json)</span></summary>
+            <pre>${escapeHtml(fewshot || "(none)")}</pre>
+          </details>
+          ${parsed ? `
+            <details open style="margin: 6px 0;">
+              <summary><b>MODEL OUTPUT (parsed)</b></summary>
+              <pre>${escapeHtml(parsed)}</pre>
+            </details>
+          ` : ""}
+          ${raw ? `
+            <details style="margin: 6px 0;">
+              <summary><b>MODEL OUTPUT (raw)</b></summary>
+              <pre>${escapeHtml(raw)}</pre>
+            </details>
+          ` : ""}
+        `;
+      }
+
       function renderResult(result) {
         el("result").style.display = "block";
         el("summary").textContent = JSON.stringify(result.summary, null, 2);
@@ -131,7 +251,7 @@
           tr.innerHTML = `
             <td><span class="badge ${sev}">${sev}</span></td>
             <td>${escapeHtml(f.category_name || f.category_id || "")}</td>
-            <td>${Number(f.confidence ?? 0).toFixed(2)}</td>
+            <td>${formatPercent(f.confidence)}</td>
             <td>${escapeHtml(f.issue_title || "")}</td>
             <td>${escapeHtml(f.what_is_wrong || "")}</td>
             <td>${escapeHtml(f.recommendation || "")}</td>
@@ -154,13 +274,21 @@
             details.style.margin = "10px 0";
             const s1 = t.stage1 ? JSON.stringify(t.stage1, null, 2) : "";
             const runs = Array.isArray(t.stage2_runs) ? t.stage2_runs : [];
+            const kind = t.kind || "paragraph";
+            const skipBadge = (kind === "heading") ? " — SKIP: heading-only" : "";
             details.innerHTML = `
-              <summary>p.${t.page}, ¶${t.paragraph_index} — ${escapeHtml(t.section_path || "")} — stage1_error=${escapeHtml(t.stage1_error ?? "null")} stage2_error=${escapeHtml(t.stage2_error ?? "null")}</summary>
+              <summary>p.${t.page}, ¶${t.paragraph_index} (${escapeHtml(kind)})${escapeHtml(skipBadge)} — ${escapeHtml(t.section_path || "")} — stage1_error=${escapeHtml(t.stage1_error ?? "null")} stage2_error=${escapeHtml(t.stage2_error ?? "null")}</summary>
               <div style="margin-top: 8px;">
                 <div><b>Section path</b></div>
                 <pre>${escapeHtml(t.section_path || "")}</pre>
                 <div><b>Paragraph text</b></div>
                 <pre>${escapeHtml(t.paragraph_text || "")}</pre>
+                ${t.kind === "heading" ? `
+                  <div><b>Note</b></div>
+                  <pre>${escapeHtml(t.note || "Heading-only paragraph. Nothing to classify.")}</pre>
+                ` : ""}
+                <div><b>Covered by windows</b> <span class="muted">(LLM runs per window; prompts are shown below in "per window")</span></div>
+                <pre>${escapeHtml(JSON.stringify(t.covered_by_windows || [], null, 2))}</pre>
                 <div><b>Stage1 parsed</b></div>
                 <pre>${escapeHtml(s1)}</pre>
                 <div><b>Stage1 raw</b></div>
@@ -200,12 +328,17 @@
                 <pre>${escapeHtml(JSON.stringify(w.parsed || {}, null, 2))}</pre>
                 <div><b>Final prompt (system)</b></div>
                 <pre>${escapeHtml(w.prompt_system || "")}</pre>
-                <div><b>Final prompt (user)</b></div>
-                <pre>${escapeHtml(w.prompt_user || "")}</pre>
+                <div><b>Final prompt (user)</b> <span class="muted">(len=${escapeHtml(w.prompt_user_len ?? "?")})</span></div>
+                <div class="muted" style="font-size:12px;">Head</div>
+                <pre>${escapeHtml(w.prompt_user_head || "")}</pre>
+                <div class="muted" style="font-size:12px;">Tail</div>
+                <pre>${escapeHtml(w.prompt_user_tail || "")}</pre>
                 <div><b>Raw output</b></div>
                 <pre>${escapeHtml(w.raw_output || "")}</pre>
                 <div><b>TEXT CHUNK (truncated)</b></div>
                 <pre>${escapeHtml(w.text_chunk || "")}</pre>
+                <div><b>TEXT CHUNK raw (before cleanup)</b></div>
+                <pre>${escapeHtml(w.text_chunk_raw || "")}</pre>
               </div>
             `;
             dbgWin.appendChild(d);
@@ -227,23 +360,57 @@
           .replaceAll("'", "&#039;");
       }
 
+      function formatPercent(x) {
+        const n = Number(x ?? 0);
+        if (!Number.isFinite(n)) return "";
+        return `${Math.round(n * 100)}%`;
+      }
+
       function startPolling(jobId) {
         if (pollTimer) clearInterval(pollTimer);
         el("jobProgress").style.display = "block";
+        const debugWindowRequested = !!el("enableDebugWindow")?.checked;
         pollTimer = setInterval(async () => {
           try {
             const job = await fetchJob(jobId);
             el("jobProgress").value = job.progress ?? 0;
             setStatus(`Status: ${job.status} | Stage: ${job.stage ?? "-"} | Progress: ${job.progress ?? 0}%`);
+            // enable/disable cancel button
+            const st = String(job.status || "");
+            el("cancelBtn").disabled = !(st === "queued" || st === "running");
+            // live trace (optional)
+            if (debugWindowRequested) {
+              try {
+                const lt = await fetchLiveTrace(jobId);
+                if (lt.enabled && lt.trace) {
+                  el("liveTrace").style.display = "block";
+                  renderLiveTrace(lt.trace);
+                } else {
+                  el("liveTrace").style.display = "none";
+                  el("liveTraceBox").innerHTML = "";
+                }
+              } catch (e) {
+                // ignore live-trace errors (debug disabled / race)
+              }
+            } else {
+              el("liveTrace").style.display = "none";
+              el("liveTraceBox").innerHTML = "";
+            }
             if (job.status === "done") {
               clearInterval(pollTimer);
               const result = await fetchResult(jobId);
               renderResult(result);
               el("downloadBtn").disabled = false;
+              el("cancelBtn").disabled = true;
+              el("liveTrace").style.display = "none";
+              el("liveTraceBox").innerHTML = "";
             }
-            if (job.status === "failed") {
+            if (job.status === "failed" || job.status === "cancelled") {
               clearInterval(pollTimer);
-              setStatus(`Failed: ${job.error || "Unknown error"}`);
+              setStatus(`${job.status === "cancelled" ? "Cancelled" : "Failed"}: ${job.error || "Unknown error"}`);
+              el("cancelBtn").disabled = true;
+              el("liveTrace").style.display = "none";
+              el("liveTraceBox").innerHTML = "";
             }
           } catch (e) {
             console.error(e);
@@ -251,11 +418,47 @@
         }, 1200);
       }
 
+      const MODEL_PRESETS = {
+        nebius: [
+          "Qwen/Qwen3-30B-A3B-Thinking-2507",
+          "openai/gpt-oss-20b",
+          "Qwen/Qwen2-7B-Instruct"
+        ],
+        openai: [
+          "gpt-5-mini",
+          "gpt-5-nano"
+        ]
+      };
+
+      function setModelOptions(provider) {
+        const sel = el("model");
+        sel.innerHTML = "";
+        const opts = (MODEL_PRESETS[provider] || []).slice();
+        for (const m of opts) {
+          const o = document.createElement("option");
+          o.value = m;
+          o.textContent = m;
+          sel.appendChild(o);
+        }
+        if (provider === "nebius") sel.value = "Qwen/Qwen3-30B-A3B-Thinking-2507";
+        if (provider === "openai") sel.value = "gpt-5-mini";
+      }
+
+      function updateProviderUI() {
+        const p = el("provider").value || "nebius";
+        el("baseUrlBox").style.display = (p === "nebius") ? "block" : "none";
+        setModelOptions(p);
+      }
+
+      el("provider").addEventListener("change", updateProviderUI);
+      updateProviderUI();
+
       el("uploadForm").addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const file = el("pdfFile").files[0];
         if (!file) return;
         el("downloadBtn").disabled = true;
+        el("cancelBtn").disabled = true;
         el("result").style.display = "none";
         setStatus("Uploading...");
         try {
@@ -263,7 +466,19 @@
           currentJobId = data.job_id;
           el("jobInfo").textContent = `Job ID: ${currentJobId}`;
           setStatus(`Queued. Limits: pages<=${data.limits.max_pages}, paragraphs<=${data.limits.max_paragraphs}, file<=${data.limits.max_file_mb}MB`);
+          el("cancelBtn").disabled = false;
           startPolling(currentJobId);
+        } catch (e) {
+          setStatus(String(e));
+        }
+      });
+
+      el("cancelBtn").addEventListener("click", async () => {
+        if (!currentJobId) return;
+        el("cancelBtn").disabled = true;
+        try {
+          await cancelJob(currentJobId);
+          setStatus("Cancelling...");
         } catch (e) {
           setStatus(String(e));
         }

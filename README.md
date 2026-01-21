@@ -37,6 +37,7 @@ The demo reads configuration from environment variables (recommended: put them i
 | `OPENAI_MODEL_STAGE2` | Stage 2 model (detailed analysis) | `Qwen/Qwen3-30B-A3B-Thinking-2507` |
 | `BASIC_AUTH_USER` | Basic Auth username for demo | `demo` |
 | `BASIC_AUTH_PASS` | Basic Auth password for demo | `demo` |
+| `ENABLE_AUTH` | Enable Basic Auth (`0`/`1`) | `1` |
 | `MAX_PAGES` | Max PDF pages | `20` |
 | `MAX_PARAGRAPHS` | Max parsed paragraphs | `200` |
 | `MAX_FILE_MB` | Max upload size (MB) | `15` |
