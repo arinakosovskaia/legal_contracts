@@ -1,6 +1,31 @@
 {
-  "version": "fewshot_v1",
-  "categories": {},
+  "version": "fewshot_v2",
+  "categories": {
+    "most_favored_nation": {
+      "file": "most_favored_nation.json",
+      "count": 2
+    },
+    "termination_for_convenience": {
+      "file": "termination_for_convenience.json",
+      "count": 0
+    },
+    "ip_ownership_assignment": {
+      "file": "ip_ownership_assignment.json",
+      "count": 2
+    },
+    "irrevocable_or_perpetual_license": {
+      "file": "irrevocable_or_perpetual_license.json",
+      "count": 0
+    },
+    "audit_rights": {
+      "file": "audit_rights.json",
+      "count": 2
+    },
+    "uncapped_liability": {
+      "file": "uncapped_liability.json",
+      "count": 2
+    }
+  },
   "source": {
     "path": "/app/data/CUAD_v1/CUAD_v1.json",
     "size_bytes": 40128638,

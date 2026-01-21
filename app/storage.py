@@ -46,6 +46,9 @@ async def init_db(db_path: Path) -> None:
               stage TEXT,
               progress INTEGER NOT NULL DEFAULT 0,
               error TEXT,
+              debug_enabled INTEGER NOT NULL DEFAULT 0,
+              debug_paragraph_enabled INTEGER NOT NULL DEFAULT 0,
+              debug_window_enabled INTEGER NOT NULL DEFAULT 0,
               filename TEXT,
               upload_path TEXT,
               result_path TEXT,
@@ -57,6 +60,19 @@ async def init_db(db_path: Path) -> None:
             )
             """
         )
+        # Best-effort migration for older DBs (SQLite supports ADD COLUMN).
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN debug_enabled INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN debug_paragraph_enabled INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN debug_window_enabled INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at)")
         await db.commit()
 
@@ -66,15 +82,36 @@ async def create_job(
     job_id: str,
     filename: str,
     upload_path: Path,
+    *,
+    debug_paragraph_enabled: bool = False,
+    debug_window_enabled: bool = False,
 ) -> None:
     now = utcnow().isoformat()
+    debug_enabled = bool(debug_paragraph_enabled or debug_window_enabled)
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """
-            INSERT INTO jobs(job_id, status, stage, progress, error, filename, upload_path, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs(
+              job_id, status, stage, progress, error,
+              debug_enabled, debug_paragraph_enabled, debug_window_enabled,
+              filename, upload_path, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (job_id, JobStatus.queued.value, "upload", 0, None, filename, str(upload_path), now, now),
+            (
+                job_id,
+                JobStatus.queued.value,
+                "upload",
+                0,
+                None,
+                int(debug_enabled),
+                int(bool(debug_paragraph_enabled)),
+                int(bool(debug_window_enabled)),
+                filename,
+                str(upload_path),
+                now,
+                now,
+            ),
         )
         await db.commit()
 

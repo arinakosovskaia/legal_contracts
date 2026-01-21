@@ -115,10 +115,20 @@ def _match_question_to_category_id(question: str, categories_payload: dict[str, 
 def _snippet_around(context: str, answer_start: int, answer_text: str, *, window: int) -> str:
     if not context:
         return ""
+    ctx = (context or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x0c", "\n")
     start = max(0, int(answer_start) - window)
-    end = min(len(context), int(answer_start) + max(len(answer_text), 1) + window)
-    snippet = context[start:end].strip()
-    return snippet
+    end = min(len(ctx), int(answer_start) + max(len(answer_text), 1) + window)
+    # Expand to nearest whitespace boundaries to avoid starting mid-word ("mage" instead of "damage").
+    while start > 0 and start < len(ctx) and ctx[start].isalnum() and ctx[start - 1].isalnum():
+        start -= 1
+    while end < len(ctx) and end > 0 and ctx[end - 1].isalnum() and ctx[end].isalnum():
+        end += 1
+    snippet = ctx[start:end]
+    # Remove standalone page-number lines like "- 11 -" and collapse huge blank areas.
+    snippet = re.sub(r"^\s*-\s*\d+\s*-\s*$", "", snippet, flags=re.MULTILINE)
+    snippet = re.sub(r"[ \t]+\n", "\n", snippet)
+    snippet = re.sub(r"\n{3,}", "\n\n", snippet)
+    return snippet.strip()
 
 
 def build_fewshot_by_category(
@@ -143,6 +153,18 @@ def build_fewshot_by_category(
         if only_category_ids is not None and cid not in only_category_ids:
             continue
         out[cid] = []
+    if only_category_ids is not None:
+        want = sorted(list(only_category_ids))
+        have = sorted(list(out.keys()))
+        if not have:
+            LOGGER.warning(
+                "Few-shot: none of requested category_ids matched categories payload. requested=%s",
+                want,
+            )
+        else:
+            missing = sorted([x for x in want if x not in set(have)])
+            if missing:
+                LOGGER.info("Few-shot: some requested category_ids missing from categories payload: %s", missing)
 
     total_added = 0
     def done() -> bool:
@@ -196,7 +218,7 @@ def save_fewshot_by_category(
     only_category_ids: Optional[list[str]] = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest: dict[str, Any] = {"version": "fewshot_v1", "categories": {}}
+    manifest: dict[str, Any] = {"version": "fewshot_v2", "categories": {}}
     if source_meta is not None:
         manifest["source"] = source_meta
     if only_category_ids is not None:
@@ -214,6 +236,8 @@ def load_fewshot_by_category(out_dir: Path) -> Optional[dict[str, list[dict[str,
     if not manifest_path.exists():
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (manifest.get("version") or "") != "fewshot_v2":
+        return None
     out: dict[str, list[dict[str, str]]] = {}
     for cid, meta in (manifest.get("categories") or {}).items():
         f = out_dir / meta.get("file", "")
@@ -238,8 +262,11 @@ def load_or_build_fewshot(
     if cached is not None:
         non_empty = sum(1 for v in cached.values() if v)
         total = sum(len(v) for v in cached.values())
-        LOGGER.info("Few-shot loaded from cache: %s examples across %s categories", total, non_empty)
-        return cached
+        if total > 0:
+            LOGGER.info("Few-shot loaded from cache: %s examples across %s categories", total, non_empty)
+            return cached
+        # If cache exists but is empty, treat as cache-miss and rebuild.
+        LOGGER.warning("Few-shot cache found but empty. Rebuilding from CUAD_v1.json ...")
 
     cuad_path = resolve_cuad_json_path(data_dir)
     LOGGER.info("Few-shot cache not found. Building from %s ...", cuad_path)

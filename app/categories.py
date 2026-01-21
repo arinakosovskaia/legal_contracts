@@ -41,6 +41,9 @@ def load_categories_from_csv(csv_path: Path, *, version: str = "cuad_v1_41_from_
     rows: list[dict[str, str]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
+        # Handle UTF-8 BOM and stray whitespace in headers (common when CSV is saved from Excel).
+        if reader.fieldnames:
+            reader.fieldnames = [(fn or "").lstrip("\ufeff").strip() for fn in reader.fieldnames]
         for r in reader:
             rows.append({k: (v or "") for k, v in r.items()})
 
@@ -61,6 +64,11 @@ def load_categories_from_csv(csv_path: Path, *, version: str = "cuad_v1_41_from_
         used.add(cid)
         cats.append({"id": cid, "name": name, "description": _clean_description(desc_raw)})
 
+    if not cats:
+        raise ValueError(
+            "Parsed 0 categories from category_descriptions.csv. "
+            "Check file encoding (UTF-8 BOM) and headers."
+        )
     return {"version": version, "categories": cats, "source": str(csv_path)}
 
 
