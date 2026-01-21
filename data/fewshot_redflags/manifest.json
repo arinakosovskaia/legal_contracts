@@ -1,0 +1,17 @@
+{
+  "version": "fewshot_v1",
+  "categories": {},
+  "source": {
+    "path": "/app/data/CUAD_v1/CUAD_v1.json",
+    "size_bytes": 40128638,
+    "mtime": 1615401644.0
+  },
+  "only_category_ids": [
+    "audit_rights",
+    "ip_ownership_assignment",
+    "irrevocable_or_perpetual_license",
+    "most_favored_nation",
+    "termination_for_convenience",
+    "uncapped_liability"
+  ]
+}
