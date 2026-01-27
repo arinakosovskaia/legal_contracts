@@ -1,4 +1,4 @@
-# Contract Red-Flag Detector (Web Demo)
+# Contract Red-Flag Detector (Demo)
 
 ## Preview Prompts (Without Docker)
 
@@ -107,11 +107,19 @@ To share your local server with others over the internet (while it's running on 
 
 3. **Create a tunnel:**
    ```bash
-   cloudflared tunnel --url http://localhost:8000 --name legal-contracts-checker
+   cloudflared tunnel --url http://localhost:8000
    ```
    
-   This will output a URL like: `https://my-study-project.trycloudflare.com`
-   
-4. **Share the URL** with others. They can access your server through this link!
+   You will get:
+   2026-01-27T21:43:54Z INF Requesting new quick Tunnel on trycloudflare.com...
+   2026-01-27T21:43:57Z INF +--------------------------------------------------------------------------------------------+
+   2026-01-27T21:43:57Z INF |  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |
+   2026-01-27T21:43:57Z INF |  https://carrier-oops-myrtle-convention.trycloudflare.com                                  |
+   2026-01-27T21:43:57Z INF +--------------------------------------------------------------------------------------------+
+   2026-01-27T21:43:57Z INF Cannot determine default configuration path. No file [config.yml config.yaml] in [~/.cloudflared ~/.cloudflare-warp ~/cloudflare-warp /etc/cloudflared /usr/local/etc/cloudflared]
 
-5. **To stop:** Press `Ctrl+C` in the terminal where cloudflared is running.
+   2026-01-27T21:43:57Z INF |  https://carrier-oops-myrtle-convention.trycloudflare.com      <- is URL (always different!)
+   
+5. **Share the URL** with others. They can access your server through this link!
+
+6. **To stop:** Press `Ctrl+C` in the terminal where cloudflared is running.
