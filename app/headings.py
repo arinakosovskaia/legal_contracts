@@ -90,6 +90,31 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         return None
     if len(raw) > max_len:
         return None
+    
+    # Filter out contact/address/signature lines that look like headings but aren't
+    # Patterns like "Attn: Name, Title", "If to Company to:", "With a copy to:", etc.
+    contact_patterns = [
+        re.compile(r"^\s*Attn:\s+", re.IGNORECASE),  # "Attn: Joseph Marino, President"
+        re.compile(r"^\s*Attention:\s+", re.IGNORECASE),  # "Attention: Name"
+        re.compile(r"^\s*If\s+to\s+", re.IGNORECASE),  # "If to Company to:"
+        re.compile(r"^\s*With\s+a\s+copy\s+to:\s*", re.IGNORECASE),  # "With a copy to:"
+        re.compile(r"^\s*Facsimile:\s*", re.IGNORECASE),  # "Facsimile: number"
+        re.compile(r"^\s*Fax:\s*", re.IGNORECASE),  # "Fax: number"
+        re.compile(r"^\s*Phone:\s*", re.IGNORECASE),  # "Phone: number"
+        re.compile(r"^\s*Email:\s*", re.IGNORECASE),  # "Email: address"
+        re.compile(r"^\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+[A-Z][a-z]+)?\s*$"),  # "Joseph Marino, President" or "John Smith, Esq." (name, title pattern)
+        re.compile(r"^\s*\d+\s+[A-Z][a-z]+\s+(?:Street|Road|Avenue|Drive|Lane|Boulevard|Way|Court|Place|Circle)\b", re.IGNORECASE),  # Address lines
+        # Signature patterns
+        re.compile(r"^\s*By:\s*", re.IGNORECASE),  # "By: /s/Joseph Marino"
+        re.compile(r"^\s*By:\s+.*By:\s+", re.IGNORECASE),  # "By: /s/Joseph Marino By: Jim Stump"
+        re.compile(r"^\s*/s/\s*", re.IGNORECASE),  # "/s/ Name" (signature marker)
+        re.compile(r"^\s*Signed:\s*", re.IGNORECASE),  # "Signed: Name"
+        re.compile(r"^\s*Signature:\s*", re.IGNORECASE),  # "Signature: Name"
+        re.compile(r"^\s*[A-Z][a-z]+\s+[A-Z][a-z]+\s*$"),  # Just two capitalized words (likely name, e.g., "Joseph Marino")
+    ]
+    for pattern in contact_patterns:
+        if pattern.match(raw):
+            return None
 
     # Marker-based headings
     m = _RE_ARTICLE_ROMAN.match(raw) or _RE_ARTICLE_NUM.match(raw)

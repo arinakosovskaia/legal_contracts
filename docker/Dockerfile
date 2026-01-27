@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
 COPY templates /app/templates
 COPY configs /app/configs
+COPY static /app/static
 
 RUN mkdir -p /app/data/uploads /app/data/results
 

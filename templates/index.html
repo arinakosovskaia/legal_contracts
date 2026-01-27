@@ -3,143 +3,775 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Contract Red-Flag Detector (Demo)</title>
+    <title>Contract Red-Flag Detector</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
-      .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
-      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; max-width: 1100px; }
-      .muted { color: #666; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { border: 1px solid #eee; padding: 8px; vertical-align: top; }
-      th { background: #fafafa; position: sticky; top: 0; }
+      :root {
+        --bg: #f5f7fb;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --card: #ffffff;
+        --border: #e5e7eb;
+        --accent: #3b82f6;
+        --accent-dark: #1d4ed8;
+        --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; color: var(--ink); background: var(--bg); }
+      a { color: inherit; text-decoration: none; }
+      .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      .hero { background: linear-gradient(120deg, #0f172a 0%, #1e3a8a 60%, #1d4ed8 100%); color: #fff; padding: 72px 0; }
+      .hero-inner { display: flex; gap: 40px; align-items: center; flex-wrap: wrap; justify-content: center; }
+      .hero-copy { width: 100%; max-width: 760px; }
+      .hero h1 { font-size: 44px; line-height: 1.08; margin: 8px 0 16px; }
+      .hero .eyebrow { text-transform: uppercase; letter-spacing: 0.12em; font-size: 12px; color: #93c5fd; }
+      .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; justify-content: center; width: 100%; }
+      .section { padding: 48px 0; }
+      .section-header { margin-bottom: 18px; }
+      .row-between { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
+      .muted { color: var(--muted); }
+      .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+      .step-num { width: 34px; height: 34px; border-radius: 10px; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+      .form-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+      .field { flex: 1 1 220px; min-width: 220px; }
+      .field.full { flex: 2 1 420px; }
+      .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+      .inline-toggle { display: flex; gap: 8px; align-items: center; }
+      .inline-toggle input { width: auto; margin: 0; }
+      .inline-toggle span { color: var(--muted); font-size: 14px; line-height: 1.4; }
+      .debug-toggle { display: flex; gap: 8px; align-items: flex-start; }
+      .debug-toggle input { width: auto; margin-top: 2px; }
+      .debug-toggle span { color: var(--muted); font-size: 14px; line-height: 1.4; }
+      input, select { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
+      input[type="file"] { padding: 8px; background: #f8fafc; }
+      button { cursor: pointer; border: none; }
+      .btn { padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 14px; }
+      .btn.hero-main { padding: 12px 22px; font-size: 16px; }
+      .btn.primary, .btn.secondary { padding: 12px 20px; font-size: 15px; }
+      .btn.primary { background: var(--accent); color: #fff; }
+      .btn.primary:hover { background: var(--accent-dark); }
+      .btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255, 255, 255, 0.4); }
+      .btn.ghost.dark { color: var(--ink); border: 1px solid var(--border); background: #fff; font-size: 14px; }
+      .btn.secondary { background: #e2e8f0; color: #1e293b; }
+      .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+      .toggle { display: flex; gap: 8px; align-items: flex-start; }
+      .toggle label { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
+      .toggle input { margin-top: 2px; }
+      .status { display: flex; gap: 12px; align-items: center; margin-top: 16px; padding: 12px; border-radius: 12px; background: #f8fafc; border: 1px solid var(--border); }
+      .status-title { font-weight: 700; }
+      .spinner { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #cbd5f5; border-top-color: #4f46e5; animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes confettiFall {
+        to {
+          transform: translateY(100vh) rotate(720deg);
+          opacity: 0;
+        }
+      }
+      .hidden { display: none; }
+      #loginModal { display: none; }
+      #loginModal:not(.hidden) { display: flex; }
+      .notice { border-radius: 12px; padding: 12px 14px; border: 1px solid transparent; margin: 8px 0 16px; }
+      .notice.success { background: #ecfdf3; border-color: #bbf7d0; color: #166534; }
+      .confetti { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; }
+      .notice.warn { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+      .notice .title { font-weight: 700; margin-bottom: 4px; }
+      .clause-block .label,
+      .clause-block .value,
+      .clause-block pre { font-size: 14px; font-weight: 400; }
+      .clause-block .label { margin-bottom: 4px; }
+      .split-view { display: flex; gap: 16px; align-items: flex-start; }
+      .split-view.hidden { display: none; }
+      .pdf-pane { flex: 1; max-width: 50%; font-size: 14px; line-height: 1.5; }
+      .details-pane { flex: 1; max-width: 50%; font-size: 14px; line-height: 1.5; }
+      .pdf-page { position: relative; margin-bottom: 16px; }
+      .pdf-overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+      .highlight { position: absolute; background: rgba(250, 204, 21, 0.35); border: 1px solid #f59e0b; border-radius: 4px; cursor: pointer; pointer-events: auto; }
+      .highlight.active { background: rgba(59, 130, 246, 0.3); border-color: #2563eb; }
+      .detail-field { margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
+      .detail-field .label { font-weight: 600; margin-bottom: 4px; font-size: 14px; }
+      .detail-field .value { color: var(--ink); font-size: 14px; line-height: 1.5; }
+      .detail-field ul { margin: 6px 0 0 18px; padding: 0; font-size: 14px; line-height: 1.5; }
+      .annotated-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; align-items: stretch; }
+      .annotated-doc { height: 500px; overflow: auto; font-size: 14px; line-height: 1.5; }
+      .annotated-detail-box { height: 500px; overflow: auto; font-size: 14px; line-height: 1.5; }
+      .annotated-para { margin-bottom: 10px; padding: 6px 8px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
+      .annotated-para:hover { background: #f8fafc; }
+      .hl-inline { background: #fef08a; border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; font-size: 14px; line-height: 1.5; }
+      .hl-inline:hover { background: #fde047; }
+      .hl-inline.active { background: #fbbf24; border: 2px solid #f59e0b; }
+      .clause-block { font-size: 14px; line-height: 1.5; }
+      .clause-block .value { font-size: 14px; line-height: 1.5; }
+      @media (max-width: 980px) {
+        .split-view { flex-direction: column; }
+        .pdf-pane, .details-pane { max-width: 100%; }
+        .annotated-split { grid-template-columns: 1fr; }
+        .annotated-doc { max-height: none; }
+      }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; }
+      th, td { border: 1px solid #eee; padding: 8px; vertical-align: top; font-size: 14px; }
+      th { background: #f8fafc; position: sticky; top: 0; font-weight: 600; }
       .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ccc; }
       .high { background: #ffe5e5; border-color: #ffb3b3; }
       .medium { background: #fff0d6; border-color: #ffd399; }
       .low { background: #e9f6ff; border-color: #b3dcff; }
-      pre { white-space: pre-wrap; word-break: break-word; }
-      button { cursor: pointer; }
+      pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px; margin: 0; }
     </style>
   </head>
   <body>
-    <h2>Contract Red-Flag Detector (Demo)</h2>
-    <p class="muted">Upload a PDF. Enter your API key (Nebius/OpenAI) and choose a model. The backend parses into sections + sliding windows and runs a red-flag classifier with CUAD-based few-shot examples.</p>
+    <div id="loginStatus" style="position: fixed; top: 16px; right: 16px; z-index: 100; display: none; align-items: center; gap: 12px; background: rgba(15, 23, 42, 0.9); padding: 8px 16px; border-radius: 8px; backdrop-filter: blur(8px);">
+      <span id="loginStatusText" style="color: #fff; font-size: 14px;"></span>
+      <button id="logoutBtn" class="btn ghost" style="padding: 6px 12px; font-size: 13px;">Logout</button>
+    </div>
+    <header class="hero" id="hero">
+      <div class="container hero-inner">
+        <div class="hero-copy">
+          <div class="eyebrow">Contract review</div>
+          <h1>Analyze your legal contracts and find unfair clauses</h1>
+          <div class="hero-actions">
+            <button id="ctaBtn" class="btn primary hero-main">Check my document</button>
+            <button id="exampleBtn" class="btn ghost">Try example contract</button>
+            <button id="settingsBtn" class="btn ghost">Settings</button>
+            <button id="loginBtn" class="btn ghost">Login (optional)</button>
+            <a class="btn ghost" href="#how">How it works</a>
+          </div>
+        </div>
+      </div>
+    </header>
 
-    <div class="card" style="margin-bottom: 24px;">
-      <h3>How to use (demo)</h3>
-      <ol>
-        <li>Click <b>Choose file</b> and select a PDF contract.</li>
-        <li>Click <b>Upload & Analyze</b>.</li>
-        <li>Wait until status becomes <b>done</b>. The table will appear automatically.</li>
-        <li>Click <b>Download JSON</b> to export the result.</li>
-      </ol>
-      <p class="muted">
-        Limits are configurable via <code>.env</code> (pages/paragraphs/file size). If the PDF exceeds limits, you will get a clear error.
-      </p>
-      <p class="muted">
-        API endpoints: <code>POST /upload</code>, <code>GET /job/&lt;id&gt;</code>, <code>GET /job/&lt;id&gt;/result</code>.
-      </p>
+    <div id="loginModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;" data-modal-backdrop="true">
+      <div class="card" style="max-width: 400px; width: 90%; position: relative; z-index: 1001;" data-modal-content="true">
+        <h3>Login (Optional)</h3>
+        <p class="muted" style="margin-bottom: 16px;">Login to use demo account with pre-configured API key.</p>
+        <form id="loginForm">
+          <div class="field">
+            <label for="loginUsername">Username</label>
+            <input id="loginUsername" type="text" placeholder="Enter username" required />
+          </div>
+          <div class="field">
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" type="password" placeholder="Enter password" required />
+          </div>
+          <div class="actions">
+            <button type="submit" class="btn primary">Login</button>
+            <button type="button" id="loginCancelBtn" class="btn secondary">Cancel</button>
+          </div>
+        </form>
+        <div id="loginError" class="notice warn hidden" style="margin-top: 12px;"></div>
+      </div>
     </div>
 
-    <div class="row">
-      <div class="card">
-        <h3>Upload</h3>
-        <form id="uploadForm">
-          <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
-            <div>
-              <div class="muted" style="font-size:12px;">Provider</div>
-              <select id="provider" name="provider">
-                <option value="nebius" selected>Nebius (TokenFactory)</option>
-                <option value="openai">OpenAI</option>
-              </select>
+    <section id="how" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2>How it works</h2>
+          <p class="muted">We use machine learning models to detect unfair clauses.</p>
+        </div>
+        <div class="steps">
+          <div class="card">
+            <div class="step-num">1</div>
+            <h4>Upload</h4>
+            <p class="muted">Choose a PDF and set your API key and model.</p>
+          </div>
+          <div class="card">
+            <div class="step-num">2</div>
+            <h4>Analyze</h4>
+            <p class="muted">The service runs large language models to classify text.</p>
+          </div>
+          <div class="card">
+            <div class="step-num">3</div>
+            <h4>Review</h4>
+            <p class="muted">Get evidence-backed findings and export JSON.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main id="settingsSection" class="section hidden">
+      <div class="container">
+        <div class="section-header row-between">
+          <div>
+            <h2>Settings</h2>
+            <p class="muted">Save your API credentials and preferences.</p>
+          </div>
+          <button id="settingsBackBtn" class="btn ghost dark">Back</button>
+        </div>
+
+        <div class="card">
+          <h3>API Configuration</h3>
+          <form id="settingsForm">
+            <div class="form-grid">
+              <div class="field">
+                <label for="settingsProvider">Provider</label>
+                <select id="settingsProvider" name="provider">
+                  <option value="nebius" selected>Nebius (TokenFactory)</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+              <div class="field full">
+                <label for="settingsApiKey">API key</label>
+                <input id="settingsApiKey" name="api_key" type="password" placeholder="Paste your API key here" />
+                <div style="margin-top: 8px;">
+                  <label style="display: flex; gap: 8px; align-items: flex-start; cursor: pointer;">
+                    <input type="checkbox" id="settingsRememberKey" checked style="width: auto; margin-top: 2px;" />
+                    <span style="font-size: 13px; color: var(--muted);">Remember API key in browser (localStorage)</span>
+                  </label>
+                </div>
+              </div>
+              <div class="field full" id="settingsBaseUrlBox">
+                <label for="settingsBaseUrl">Base URL (Nebius)</label>
+                <input id="settingsBaseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" />
+              </div>
             </div>
-            <div>
-              <div class="muted" style="font-size:12px;">Model</div>
-              <select id="model" name="model"></select>
+
+            <div class="actions">
+              <button type="submit" class="btn primary">Save Settings</button>
+              <button type="button" id="clearSettingsBtn" class="btn secondary">Clear Saved Settings</button>
             </div>
+          </form>
+          <div id="settingsStatus" class="status hidden" style="margin-top: 16px;">
+            <div id="settingsStatusTitle" class="status-title"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <main id="analyzeSection" class="section hidden">
+      <div class="container">
+        <div class="section-header row-between">
+          <div>
+            <h2>Check a document</h2>
+            <p class="muted">Enter your credentials, choose a model, and upload a PDF.</p>
+          </div>
+          <button id="backBtn" class="btn ghost dark">Back</button>
+        </div>
+
+        <div class="card">
+          <h3>Analysis settings</h3>
+          <form id="uploadForm">
+            <div class="form-grid">
+              <div class="field">
+                <label for="provider">Provider</label>
+                <select id="provider" name="provider">
+                  <option value="nebius" selected>Nebius (TokenFactory)</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="model">Model</label>
+                <select id="model" name="model"></select>
+              </div>
+              <div class="field full">
+                <label for="modelCustom">Custom model (optional)</label>
+                <input id="modelCustom" type="text" placeholder="(optional) override selected model" />
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="field full">
+                <label for="apiKey">API key</label>
+                <input id="apiKey" name="api_key" type="password" placeholder="Paste key here (or login as demo to use server key)" />
+                <p class="muted" style="font-size: 12px; margin-top: 4px;">
+                  Key is sent to server for processing only (not stored on server). 
+                  Use Settings to optionally save it in your browser.
+                  <span id="demoKeyNotice" style="display: none; color: var(--accent); font-weight: 600;"> Using demo account - server API key will be used.</span>
+                </p>
+              </div>
+              <div class="field full" id="baseUrlBox">
+                <label for="baseUrl">Base URL (Nebius)</label>
+                <input id="baseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" />
+              </div>
+            </div>
+
+            <div style="margin-bottom:12px;">
+              <label class="debug-toggle">
+                <input id="enableDebugParagraph" type="checkbox" />
+                <span>Debug per paragraph</span>
+              </label>
+              <label class="debug-toggle" style="margin-top:6px;">
+                <input id="enableDebugWindow" type="checkbox" />
+                <span>Full LLM debug</span>
+              </label>
+            </div>
+
+            <div class="form-grid">
+              <div class="field full">
+                <label for="pdfFile">Upload PDF</label>
+                <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
+                <div id="fileInfo" style="margin-top: 6px; font-size: 13px; color: var(--muted); display: none;"></div>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="btn primary">Process</button>
+              <button id="cancelBtn" type="button" class="btn secondary" disabled>Stop</button>
+            </div>
+          </form>
+
+          <div id="statusBanner" class="status hidden">
+            <div id="statusSpinner" class="spinner"></div>
             <div>
-              <div class="muted" style="font-size:12px;">Custom model (optional)</div>
-              <input id="modelCustom" type="text" placeholder="(optional) override selected model" style="min-width:420px;" />
+              <div id="statusTitle" class="status-title">Processing</div>
+              <div id="jobStatus" class="muted"></div>
+              <div id="jobInfo" class="muted"></div>
             </div>
           </div>
+          <progress id="jobProgress" value="0" max="100" style="width: 100%; display: none; margin-top: 10px;"></progress>
+        </div>
 
-          <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
-            <div>
-              <div class="muted" style="font-size:12px;">API key (not stored)</div>
-              <input id="apiKey" name="api_key" type="password" placeholder="Paste key here" style="min-width:420px;" />
-            </div>
-            <div id="baseUrlBox">
-              <div class="muted" style="font-size:12px;">Base URL (Nebius)</div>
-              <input id="baseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" style="min-width:420px;" />
-            </div>
-          </div>
-
-          <div style="margin-bottom:10px;">
-            <label class="muted" style="display:flex; gap:8px; align-items:center;">
-              <input id="enableDebugParagraph" type="checkbox" />
-              Debug per paragraph (parser output + section path)
-            </label>
-            <label class="muted" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-              <input id="enableDebugWindow" type="checkbox" />
-              Debug per window (LLM prompts + outputs + live trace). May include document text.
-            </label>
-          </div>
-
-          <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
-          <button type="submit">Upload & Analyze</button>
-        </form>
-        <p id="jobInfo" class="muted"></p>
-        <p id="jobStatus"></p>
-        <progress id="jobProgress" value="0" max="100" style="width: 100%; display: none;"></progress>
-        <div id="liveTrace" class="card" style="display:none; margin-top: 12px;">
+        <div id="liveTrace" class="card" style="display:none; margin-top: 16px;">
           <h3>Live trace (current LLM window)</h3>
-          <p class="muted">This updates during processing and replaces the previous trace. Enable by checking <b>Debug per window</b> before upload.</p>
+          <p class="muted">This updates during processing and replaces the previous trace. Enable by checking <b>Full LLM debug</b> before upload.</p>
           <div id="liveTraceBox"></div>
         </div>
-        <p>
-          <button id="downloadBtn" disabled>Download JSON</button>
-          <button id="cancelBtn" disabled style="margin-left:8px;">Stop</button>
-        </p>
-      </div>
-    </div>
 
-    <div id="result" class="card" style="display:none; margin-top: 24px;">
-      <h3>Summary</h3>
-      <pre id="summary"></pre>
-      <h3>Findings</h3>
-      <div style="max-height: 560px; overflow: auto;">
-        <table id="findingsTable">
-          <thead>
-            <tr>
-              <th>Severity</th>
-              <th>Category</th>
-              <th>Confidence</th>
-              <th>Issue</th>
-              <th>What is wrong</th>
-              <th>Recommendation</th>
-              <th>Evidence</th>
-              <th>Location</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+        <div id="splitView" class="split-view hidden" style="margin-top: 20px;">
+          <div class="card pdf-pane">
+            <h3>Document</h3>
+            <div id="pdfContainer"></div>
+          </div>
+          <div class="card details-pane">
+            <h3>Selected clause</h3>
+            <div id="detailCard" class="muted">Click a highlighted paragraph to view details.</div>
+          </div>
+        </div>
 
-      <div id="debug" style="display:none; margin-top: 24px;">
-        <h3>Debug traces</h3>
-        <p class="muted">Enabled only if you checked <b>Debug per paragraph</b> and/or <b>Debug per window</b> before upload. This may include document text.</p>
-        <div id="debugTraces"></div>
-        <div id="debugWindows" style="margin-top:16px;"></div>
-      </div>
-    </div>
+        <div id="result" class="card" style="display:none; margin-top: 24px;">
+          <h3>Findings</h3>
+          <div id="fairNotice" class="notice success" style="display:none; text-align: center; padding: 32px;">
+            <div class="title" style="font-size: 24px; margin-bottom: 12px;">Your document looks fair!</div>
+            <div>Still, consider a human review for high-stakes agreements since AI may make errors.</div>
+          </div>
+          <div id="unfairNotice" class="notice warn" style="display:none;">
+            <div class="title">We found clauses that look unfair.</div>
+            <div>Model can make mistakes. Please review carefully.</div>
+          </div>
+          <div id="annotatedView" style="display:none; margin-top: 16px;">
+            <div style="margin-bottom: 12px;">
+              <button id="nextClauseBtnInline" class="btn" style="display:none; padding: 8px 16px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">Move to next unfair clause</button>
+            </div>
+            <div class="annotated-split">
+              <div class="card annotated-doc" id="annotatedDocBox"></div>
+              <div class="card annotated-detail-box" id="annotatedDetailBox">
+                <div class="muted">Click a highlighted clause to view details.</div>
+              </div>
+            </div>
+          </div>
+          <div id="clauseHeader" class="card clause-block" style="margin-bottom: 12px; display: none;">
+            <div class="detail-field">
+              <div class="label">Clause</div>
+              <pre id="clauseQuote" class="value"></pre>
+            </div>
+            <div class="detail-field">
+              <div class="label">Explanation (UK law)</div>
+              <div id="clauseExplanation" class="value" style="white-space: pre-wrap;"></div>
+            </div>
+            <div class="detail-field">
+              <div class="label">Legal references</div>
+              <pre id="clauseLegalRefs" class="value"></pre>
+            </div>
+            <div class="detail-field">
+              <div class="label">Revised clause</div>
+              <pre id="clauseRevised" class="value"></pre>
+            </div>
+            <div class="detail-field">
+              <div class="label">Revision explanation</div>
+              <div id="clauseRevisionExplanation" class="value" style="white-space: pre-wrap;"></div>
+            </div>
+          </div>
+          <div style="max-height: 560px; overflow: auto; margin-top: 24px;">
+            <table id="findingsTable">
+              <thead>
+                <tr>
+                  <th>Quote</th>
+                  <th>Explanation (UK law)</th>
+                  <th>Legal references</th>
+                  <th>Possible consequences</th>
+                  <th>Severity of consequences (0–3)</th>
+                  <th>Consequences category</th>
+                  <th>Risk category</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="rawText" style="margin-top: 16px; display: none;">
+            <h4>Raw result (JSON)</h4>
+            <pre id="rawTextContent" style="max-height: 400px; overflow: auto; font-size: 12px; background: #f8fafc; padding: 12px; border-radius: 8px;"></pre>
+          </div>
 
+          <div id="debug" style="display:none; margin-top: 24px;">
+            <h3>Debug traces</h3>
+            <p class="muted">Enabled only if you checked <b>Debug per paragraph</b> and/or <b>Full LLM debug</b> before upload. This may include document text.</p>
+            <div id="debugTraces"></div>
+            <div id="debugWindows" style="margin-top:16px;"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js"></script>
     <script>
       let currentJobId = null;
       let pollTimer = null;
+      let activeHighlightId = null;
 
       function el(id) { return document.getElementById(id); }
 
-      function setStatus(text) {
-        el("jobStatus").textContent = text;
+      function renderDetailCard(f) {
+        const box = el("detailCard");
+        if (!box) return;
+        if (!f) {
+          box.innerHTML = "<span class=\"muted\">No unfair clauses found.</span>";
+          return;
+        }
+        const refs = (f.legal_references || []).map(r => `<li>${escapeHtml(r)}</li>`).join("");
+        box.innerHTML = `
+          <div class="detail-field">
+            <div class="label">Suspicious line</div>
+            <pre class="value">${escapeHtml(f.evidence_quote || "")}</pre>
+          </div>
+          <div class="detail-field">
+            <div class="label">Explanation (UK law)</div>
+            <div class="value">${escapeHtml(f.explanation || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Legal references</div>
+            <ul class="value">${refs || "<li>(none)</li>"}</ul>
+          </div>
+          <div class="detail-field">
+            <div class="label">Consequences</div>
+            <div class="value">${escapeHtml(f.possible_consequences || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Severity of consequences (0–3)</div>
+            <div class="value">${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revised clause (if possible)</div>
+            <pre class="value">${escapeHtml(f.revised_clause || "")}</pre>
+          </div>
+          <div class="detail-field">
+            <div class="label">Suggested Follow-Up for Tenant</div>
+            <div class="value">${escapeHtml(f.suggested_follow_up || "(none)")}</div>
+          </div>
+        `;
+        setClauseHeader(f);
+      }
+
+      function setClauseHeader(f) {
+        const header = el("clauseHeader");
+        if (!header) return;
+        if (!f) {
+          header.style.display = "none";
+          el("clauseQuote").textContent = "";
+          el("clauseRevised").textContent = "";
+          el("clauseRevisionExplanation").textContent = "";
+          el("clauseExplanation").textContent = "";
+          el("clauseLegalRefs").textContent = "";
+          return;
+        }
+        header.style.display = "block";
+        // Use textContent for <pre> elements to preserve line breaks
+        el("clauseQuote").textContent = f.evidence_quote || "";
+        el("clauseRevised").textContent = f.revised_clause || "";
+        // For div elements with white-space: pre-wrap, use textContent to preserve \n
+        const explanationEl = el("clauseExplanation");
+        if (explanationEl) {
+          explanationEl.textContent = f.explanation || "";
+        }
+        const revisionExplanationEl = el("clauseRevisionExplanation");
+        if (revisionExplanationEl) {
+          revisionExplanationEl.textContent = f.revision_explanation || "";
+        }
+        // Legal references as list - preserve line breaks
+        const legalRefsEl = el("clauseLegalRefs");
+        if (legalRefsEl) {
+          const refs = f.legal_references || [];
+          if (refs.length > 0) {
+            legalRefsEl.textContent = refs.join("\n");
+          } else {
+            legalRefsEl.textContent = "";
+          }
+        }
+      }
+
+      function buildHighlights(findings) {
+        return (findings || [])
+          .filter(f => f.is_unfair && f.paragraph_bbox && f.location?.page)
+          .map(f => ({
+            finding_id: f.finding_id,
+            page: Number(f.location.page),
+            bbox: f.paragraph_bbox,
+            data: f,
+          }));
+      }
+
+      async function renderPdf(jobId, highlights) {
+        const split = el("splitView");
+        const container = el("pdfContainer");
+        if (!split || !container || !window.pdfjsLib) return;
+        split.classList.remove("hidden");
+        container.innerHTML = "<div class=\"muted\">Loading document…</div>";
+        const pdfUrl = `/job/${jobId}/pdf`;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js";
+        const doc = await window.pdfjsLib.getDocument(pdfUrl).promise;
+        container.innerHTML = "";
+        const highlightMap = new Map();
+
+        for (let pageNum = 1; pageNum <= doc.numPages; pageNum += 1) {
+          const page = await doc.getPage(pageNum);
+          const unscaled = page.getViewport({ scale: 1 });
+          const containerWidth = Math.max(320, container.clientWidth - 24);
+          const scale = Math.min(1.4, containerWidth / unscaled.width);
+          const viewport = page.getViewport({ scale });
+
+          const pageDiv = document.createElement("div");
+          pageDiv.className = "pdf-page";
+          pageDiv.style.width = `${viewport.width}px`;
+          pageDiv.style.height = `${viewport.height}px`;
+
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          pageDiv.appendChild(canvas);
+
+          const overlay = document.createElement("div");
+          overlay.className = "pdf-overlay";
+          overlay.style.width = `${viewport.width}px`;
+          overlay.style.height = `${viewport.height}px`;
+          pageDiv.appendChild(overlay);
+
+          container.appendChild(pageDiv);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          const pageHighlights = (highlights || []).filter(h => h.page === pageNum);
+          for (const h of pageHighlights) {
+            const b = h.bbox;
+            if (!b) continue;
+            const left = b.x0 * viewport.width;
+            const top = b.y0 * viewport.height;
+            const width = Math.max(8, (b.x1 - b.x0) * viewport.width);
+            const height = Math.max(6, (b.y1 - b.y0) * viewport.height);
+            const hl = document.createElement("div");
+            hl.className = "highlight";
+            hl.style.left = `${left}px`;
+            hl.style.top = `${top}px`;
+            hl.style.width = `${width}px`;
+            hl.style.height = `${height}px`;
+            hl.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              document.querySelectorAll(".highlight.active").forEach(node => node.classList.remove("active"));
+              hl.classList.add("active");
+              activeHighlightId = h.finding_id;
+              renderDetailCard(h.data);
+            });
+            overlay.appendChild(hl);
+            highlightMap.set(h.finding_id, hl);
+          }
+        }
+
+        if (highlights && highlights.length) {
+          const first = highlights[0];
+          const node = highlightMap.get(first.finding_id);
+          if (node) {
+            node.classList.add("active");
+          }
+          activeHighlightId = first.finding_id;
+          renderDetailCard(first.data);
+        } else {
+          renderDetailCard(null);
+        }
+      }
+
+      function showAnalyze() {
+        const hero = el("hero");
+        const analyze = el("analyzeSection");
+        const settings = el("settingsSection");
+        const how = el("how");
+        if (hero) hero.style.display = "none";
+        if (how) how.classList.add("hidden");
+        if (settings) settings.classList.add("hidden");
+        if (analyze) analyze.classList.remove("hidden");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      function showSettings() {
+        const hero = el("hero");
+        const analyze = el("analyzeSection");
+        const settings = el("settingsSection");
+        const how = el("how");
+        if (hero) hero.style.display = "none";
+        if (how) how.classList.add("hidden");
+        if (analyze) analyze.classList.add("hidden");
+        if (settings) settings.classList.remove("hidden");
+        loadSettings();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      function showHero() {
+        const hero = el("hero");
+        const analyze = el("analyzeSection");
+        const settings = el("settingsSection");
+        const how = el("how");
+        if (hero) hero.style.display = "block";
+        if (how) how.classList.remove("hidden");
+        if (analyze) analyze.classList.add("hidden");
+        if (settings) settings.classList.add("hidden");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+
+      // Settings management
+      function saveSettings() {
+        const rememberKey = el("settingsRememberKey").checked;
+        const settings = {
+          provider: el("settingsProvider").value,
+          apiKey: rememberKey ? el("settingsApiKey").value : "",
+          baseUrl: el("settingsBaseUrl").value,
+          rememberKey: rememberKey,
+        };
+        try {
+          localStorage.setItem("contract_analyzer_settings", JSON.stringify(settings));
+          return true;
+        } catch (e) {
+          console.error("Failed to save settings:", e);
+          return false;
+        }
+      }
+
+      function loadSettings() {
+        try {
+          const saved = localStorage.getItem("contract_analyzer_settings");
+          if (saved) {
+            const settings = JSON.parse(saved);
+            if (settings.provider) el("settingsProvider").value = settings.provider;
+            if (settings.apiKey) el("settingsApiKey").value = settings.apiKey;
+            if (settings.baseUrl) el("settingsBaseUrl").value = settings.baseUrl;
+            if (settings.rememberKey !== undefined) {
+              el("settingsRememberKey").checked = settings.rememberKey;
+            } else {
+              el("settingsRememberKey").checked = !!settings.apiKey;
+            }
+            
+            // Update provider UI
+            updateSettingsProviderUI();
+          }
+        } catch (e) {
+          console.error("Failed to load settings:", e);
+        }
+      }
+
+      function loadSettingsToAnalyzeForm() {
+        try {
+          const saved = localStorage.getItem("contract_analyzer_settings");
+          if (saved) {
+            const settings = JSON.parse(saved);
+            if (settings.provider) el("provider").value = settings.provider;
+            // Only load API key if user chose to remember it
+            if (settings.rememberKey && settings.apiKey) {
+              el("apiKey").value = settings.apiKey;
+            }
+            if (settings.baseUrl) el("baseUrl").value = settings.baseUrl;
+            
+            // Update provider UI
+            updateProviderUI();
+          }
+        } catch (e) {
+          console.error("Failed to load settings:", e);
+        }
+      }
+
+      function clearSettings() {
+        try {
+          localStorage.removeItem("contract_analyzer_settings");
+          el("settingsProvider").value = "nebius";
+          el("settingsApiKey").value = "";
+          el("settingsBaseUrl").value = "https://api.tokenfactory.nebius.com/v1/";
+          updateSettingsProviderUI();
+          return true;
+        } catch (e) {
+          console.error("Failed to clear settings:", e);
+          return false;
+        }
+      }
+
+      function updateSettingsProviderUI() {
+        const p = el("settingsProvider").value || "nebius";
+        el("settingsBaseUrlBox").style.display = (p === "nebius") ? "block" : "none";
+      }
+
+      function setStatus(text, title) {
+        el("jobStatus").textContent = text || "";
+        if (title !== undefined) {
+          el("statusTitle").textContent = title || "Status";
+        }
+        const banner = el("statusBanner");
+        if (text) {
+          banner.classList.remove("hidden");
+        } else {
+          banner.classList.add("hidden");
+        }
+      }
+
+      function getAuthInfo() {
+        try {
+          const auth = localStorage.getItem("contract_analyzer_auth");
+          if (auth) {
+            return JSON.parse(auth);
+          }
+        } catch (e) {
+          console.error("Failed to load auth info:", e);
+        }
+        return null;
+      }
+
+      function saveAuthInfo(authInfo) {
+        try {
+          localStorage.setItem("contract_analyzer_auth", JSON.stringify(authInfo));
+        } catch (e) {
+          console.error("Failed to save auth info:", e);
+        }
+      }
+
+      function clearAuthInfo() {
+        try {
+          localStorage.removeItem("contract_analyzer_auth");
+          updateLoginStatus();
+        } catch (e) {
+          console.error("Failed to clear auth info:", e);
+        }
+      }
+      
+      // Helper function to clear auth (can be called from browser console)
+      window.clearAuth = function() {
+        clearAuthInfo();
+        console.log("Auth info cleared. Refresh the page to see changes.");
+      };
+
+      function updateLoginStatus() {
+        const authInfo = getAuthInfo();
+        const loginStatus = el("loginStatus");
+        const loginStatusText = el("loginStatusText");
+        const demoKeyNotice = el("demoKeyNotice");
+        
+        if (authInfo && authInfo.success) {
+          if (loginStatus) loginStatus.style.display = "flex";
+          if (loginStatusText) {
+            loginStatusText.textContent = `Logged in as: ${authInfo.username}`;
+          }
+          if (authInfo.is_demo && demoKeyNotice) {
+            demoKeyNotice.style.display = "inline";
+            el("apiKey").placeholder = "Using demo account - server API key will be used";
+          } else if (demoKeyNotice) {
+            demoKeyNotice.style.display = "none";
+            el("apiKey").placeholder = "Paste key here (or login as demo to use server key)";
+          }
+        } else {
+          if (loginStatus) loginStatus.style.display = "none";
+          if (demoKeyNotice) demoKeyNotice.style.display = "none";
+          el("apiKey").placeholder = "Paste key here (or login as demo to use server key)";
+        }
       }
 
       async function uploadPdf(file) {
@@ -151,10 +783,15 @@
         const modelSel = (el("model")?.value || "");
         const modelCustom = (el("modelCustom")?.value || "");
         const model = modelCustom.trim() ? modelCustom.trim() : modelSel;
+        
+        const authInfo = getAuthInfo();
+        const useDemoKey = authInfo && authInfo.success && authInfo.is_demo ? "1" : "0";
+        
         fd.append("provider", provider);
         fd.append("api_key", apiKey);
         fd.append("base_url", baseUrl);
         fd.append("model", model);
+        fd.append("use_demo_key", useDemoKey);
         fd.append("enable_debug_paragraph", el("enableDebugParagraph")?.checked ? "1" : "0");
         fd.append("enable_debug_window", el("enableDebugWindow")?.checked ? "1" : "0");
         const res = await fetch("/upload", { method: "POST", body: fd });
@@ -239,26 +876,71 @@
         `;
       }
 
+      function createConfetti() {
+        const confetti = document.createElement("div");
+        confetti.className = "confetti";
+        confetti.innerHTML = "";
+        document.body.appendChild(confetti);
+        const colors = ["#10b981", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444"];
+        for (let i = 0; i < 100; i++) {
+          const piece = document.createElement("div");
+          piece.style.position = "absolute";
+          piece.style.width = "10px";
+          piece.style.height = "10px";
+          piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+          piece.style.left = Math.random() * 100 + "%";
+          piece.style.top = "-10px";
+          piece.style.borderRadius = "50%";
+          piece.style.animation = `confettiFall ${2 + Math.random() * 3}s linear forwards`;
+          confetti.appendChild(piece);
+        }
+        setTimeout(() => confetti.remove(), 5000);
+      }
+
       function renderResult(result) {
         el("result").style.display = "block";
-        el("summary").textContent = JSON.stringify(result.summary, null, 2);
 
         const tbody = el("findingsTable").querySelector("tbody");
         tbody.innerHTML = "";
-        for (const f of result.findings || []) {
+        const findings = result.findings || [];
+        const hasFindings = Array.isArray(findings) && findings.length > 0;
+        el("fairNotice").style.display = hasFindings ? "none" : "block";
+        el("unfairNotice").style.display = hasFindings ? "block" : "none";
+        el("findingsTable").style.display = hasFindings ? "table" : "none";
+        el("annotatedView").style.display = hasFindings ? "block" : "none";
+        if (hasFindings) {
+          setClauseHeader(null);
+          renderAnnotatedView(currentJobId, findings);
+        }
+        
+        if (!hasFindings) {
+          createConfetti();
+          setTimeout(() => {
+            el("fairNotice").scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 300);
+        }
+        for (const f of findings) {
           const tr = document.createElement("tr");
-          const sev = (f.severity || "low").toLowerCase();
+          tr.addEventListener("click", () => setClauseHeader(f));
+          const refs = (f.legal_references || []).join(", ");
           tr.innerHTML = `
-            <td><span class="badge ${sev}">${sev}</span></td>
-            <td>${escapeHtml(f.category_name || f.category_id || "")}</td>
-            <td>${formatPercent(f.confidence)}</td>
-            <td>${escapeHtml(f.issue_title || "")}</td>
-            <td>${escapeHtml(f.what_is_wrong || "")}</td>
-            <td>${escapeHtml(f.recommendation || "")}</td>
-            <td><pre>${escapeHtml(f.evidence_quote || "")}</pre></td>
-            <td>p.${f.location?.page ?? "?"}, ¶${f.location?.paragraph_index ?? "?"}</td>
+            <td><pre style="margin:0; white-space:pre-wrap;">${escapeHtml(f.evidence_quote || "")}</pre></td>
+            <td>${escapeHtml(f.explanation || "")}</td>
+            <td>${escapeHtml(refs || "")}</td>
+            <td>${escapeHtml(f.possible_consequences || "")}</td>
+            <td>${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</td>
+            <td>${escapeHtml(f.consequences_category || "")}</td>
+            <td>${escapeHtml(f.risk_category || "")}</td>
           `;
           tbody.appendChild(tr);
+        }
+        const rawBox = el("rawText");
+        const rawContent = el("rawTextContent");
+        if (rawBox && rawContent && hasFindings) {
+          rawBox.style.display = "block";
+          rawContent.textContent = JSON.stringify(result, null, 2);
+        } else if (rawBox) {
+          rawBox.style.display = "none";
         }
 
         const traces = result?.meta?.debug?.paragraph_traces || null;
@@ -335,10 +1017,6 @@
                 <pre>${escapeHtml(w.prompt_user_tail || "")}</pre>
                 <div><b>Raw output</b></div>
                 <pre>${escapeHtml(w.raw_output || "")}</pre>
-                <div><b>TEXT CHUNK (truncated)</b></div>
-                <pre>${escapeHtml(w.text_chunk || "")}</pre>
-                <div><b>TEXT CHUNK raw (before cleanup)</b></div>
-                <pre>${escapeHtml(w.text_chunk_raw || "")}</pre>
               </div>
             `;
             dbgWin.appendChild(d);
@@ -366,17 +1044,493 @@
         return `${Math.round(n * 100)}%`;
       }
 
+      function buildRangesAnnotated(text, quote, findingId) {
+        const ranges = [];
+        if (!quote || !text || quote.length < 10) return ranges;
+        // Backend sends normalized text and normalized quotes; use as-is for exact match.
+        let start = 0;
+        while (start < text.length) {
+          const idx = text.indexOf(quote, start);
+          if (idx === -1) break;
+          ranges.push({ start: idx, end: idx + quote.length, id: findingId });
+          start = idx + quote.length;
+        }
+        if (ranges.length > 0) return ranges;
+        const tLower = text.toLowerCase();
+        const qLower = quote.toLowerCase();
+        start = 0;
+        while (start < tLower.length) {
+          const idx = tLower.indexOf(qLower, start);
+          if (idx === -1) break;
+          ranges.push({ start: idx, end: idx + quote.length, id: findingId });
+          start = idx + quote.length;
+        }
+        return ranges;
+      }
+
+      function splitTextIntoSubparagraphs(text) {
+        // Split text at patterns like "4.1", "(A)", "(b)", etc.
+        // Returns array of {text, offset} where offset is the position in original text
+        const parts = [];
+        const patterns = [
+          /\s+(\d+\.\d+(?:\.\d+)*)\s+/,      // "4.1", "4.2.3", etc. (with spaces around)
+          /\s+\(([A-Z])\)\s+/,                // "(A)", "(B)", etc.
+          /\s+\(([a-z])\)\s+/,                // "(a)", "(b)", etc.
+          /\s+\(([ivx]+)\)\s+/i,              // "(i)", "(ii)", etc.
+        ];
+        
+        let lastIndex = 0;
+        let searchText = text;
+        
+        while (true) {
+          let bestMatch = null;
+          let bestIndex = -1;
+          let bestPatternIndex = -1;
+          
+          // Find the earliest pattern match
+          for (let i = 0; i < patterns.length; i++) {
+            const pattern = patterns[i];
+            const match = searchText.match(pattern);
+            if (match && (bestIndex === -1 || match.index < bestIndex)) {
+              bestMatch = match;
+              bestIndex = match.index;
+              bestPatternIndex = i;
+            }
+          }
+          
+          if (!bestMatch || bestIndex === -1) {
+            // No more patterns, add remaining text
+            const remaining = text.slice(lastIndex);
+            if (remaining.trim()) {
+              parts.push({ text: remaining, offset: lastIndex, isSubsection: false });
+            }
+            break;
+          }
+          
+          // Add text before the pattern
+          const beforeEnd = lastIndex + bestIndex;
+          if (beforeEnd > lastIndex) {
+            const beforeText = text.slice(lastIndex, beforeEnd);
+            if (beforeText.trim()) {
+              parts.push({ text: beforeText, offset: lastIndex, isSubsection: false });
+            }
+          }
+          
+          // Find where this subsection ends (next pattern or end of text)
+          const patternStart = lastIndex + bestIndex;
+          const patternEnd = patternStart + bestMatch[0].length;
+          let nextPatternIndex = -1;
+          
+          // Search for next pattern after this one
+          const afterPattern = text.slice(patternEnd);
+          for (let i = 0; i < patterns.length; i++) {
+            const pattern = patterns[i];
+            const match = afterPattern.match(pattern);
+            if (match && (nextPatternIndex === -1 || match.index < nextPatternIndex)) {
+              nextPatternIndex = match.index;
+            }
+          }
+          
+          if (nextPatternIndex >= 0) {
+            // Found next pattern, extract subsection up to it
+            const subsectionEnd = patternEnd + nextPatternIndex;
+            const subsectionText = text.slice(patternStart, subsectionEnd);
+            if (subsectionText.trim()) {
+              parts.push({ text: subsectionText, offset: patternStart, isSubsection: true });
+            }
+            lastIndex = subsectionEnd;
+            searchText = text.slice(lastIndex);
+          } else {
+            // No next pattern, take rest as subsection
+            const subsectionText = text.slice(patternStart);
+            if (subsectionText.trim()) {
+              parts.push({ text: subsectionText, offset: patternStart, isSubsection: true });
+            }
+            break;
+          }
+        }
+        
+        return parts.length > 0 ? parts : [{ text: text, offset: 0, isSubsection: false }];
+      }
+
+      function renderParagraphAnnotated(text, ranges) {
+        // Text is already normalized by backend; use as-is.
+        if (!ranges.length) return escapeHtml(text);
+        const sorted = ranges.sort((a, b) => a.start - b.start);
+        let out = "";
+        let cursor = 0;
+        for (const r of sorted) {
+          if (r.start < cursor) continue;
+          out += escapeHtml(text.slice(cursor, r.start));
+          out += `<span class="hl-inline" data-finding-id="${r.id}">${escapeHtml(text.slice(r.start, r.end))}</span>`;
+          cursor = r.end;
+        }
+        out += escapeHtml(text.slice(cursor));
+        return out;
+      }
+
+      function renderParagraphWithSubsections(text, ranges) {
+        const parts = splitTextIntoSubparagraphs(text);
+        if (parts.length <= 1) return renderParagraphAnnotated(text, ranges);
+        
+        // Render each part separately with appropriate ranges
+        const sorted = ranges.sort((a, b) => a.start - b.start);
+        const htmlParts = [];
+        
+        for (const part of parts) {
+          const partStart = part.offset;
+          const partEnd = part.offset + part.text.length;
+          
+          // Find ranges that overlap with this part
+          const partRanges = sorted
+            .filter(r => r.end > partStart && r.start < partEnd)
+            .map(r => ({
+              start: Math.max(0, r.start - partStart),
+              end: Math.min(part.text.length, r.end - partStart),
+              id: r.id
+            }));
+          
+          // Render this part
+          const partHtml = renderParagraphAnnotated(part.text, partRanges);
+          const marginStyle = part.isSubsection ? 'margin-top: 8px; margin-bottom: 4px;' : 'margin-bottom: 4px;';
+          htmlParts.push(`<div style="${marginStyle}">${partHtml}</div>`);
+        }
+        
+        return htmlParts.join("");
+      }
+
+      function renderAnnotatedDetails(f) {
+        const box = el("annotatedDetailBox");
+        if (!box) return;
+        if (!f) {
+          box.innerHTML = "<div class=\"muted\">Click a highlighted clause to view details.</div>";
+          return;
+        }
+        const refs = (f.legal_references || []).map(r => `<li>${escapeHtml(r)}</li>`).join("");
+        box.innerHTML = `
+          <div class="detail-field">
+            <div class="label">Explanation (UK law)</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.explanation || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Legal references</div>
+            <ul>${refs || "<li>(none)</li>"}</ul>
+          </div>
+          <div class="detail-field">
+            <div class="label">Possible consequences</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.possible_consequences || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Severity of consequences (0–3)</div>
+            <div>${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Consequences category</div>
+            <div>${escapeHtml(f.consequences_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Risk category</div>
+            <div>${escapeHtml(f.risk_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revised clause</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.revised_clause || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revision explanation</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.revision_explanation || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Suggested Follow-Up for Tenant</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.suggested_follow_up || "")}</div>
+          </div>
+        `;
+      }
+
+      async function renderAnnotatedView(jobId, findings) {
+        if (!jobId) return;
+        const docBox = el("annotatedDocBox");
+        const detailBox = el("annotatedDetailBox");
+        if (!docBox || !detailBox) return;
+        try {
+          const res = await fetch(`/job/${jobId}/annotated-data`, { credentials: "same-origin" });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "Failed to load");
+          const paragraphs = data.paragraphs || [];
+          const findingsById = {};
+          for (const f of findings) {
+            findingsById[f.finding_id] = f;
+          }
+          const paraMap = {};
+          for (const f of findings) {
+            const idx = f.location?.paragraph_index;
+            if (idx == null) continue;
+            paraMap[idx] = paraMap[idx] || [];
+            paraMap[idx].push(f);
+          }
+          // Build finding-to-paragraphs map: for each finding, find all paragraphs where quote appears
+          // This handles cases where quote spans multiple paragraphs
+          const findingParaMap = {}; // finding_id -> set of paragraph indices
+          for (const f of findings) {
+            const quote = f.evidence_quote || "";
+            if (!quote || quote.length < 10) continue;
+            const findingId = f.finding_id;
+            if (!findingParaMap[findingId]) {
+              findingParaMap[findingId] = new Set();
+            }
+            // Add the paragraph where finding is located
+            const idx = f.location?.paragraph_index;
+            if (idx != null) {
+              findingParaMap[findingId].add(idx);
+            }
+            // Also search in adjacent paragraphs for quote parts
+            // Try to find the full quote by concatenating adjacent paragraphs
+            const quoteWords = quote.split();
+            if (quoteWords.length >= 5) {
+              const quoteStart = quoteWords.slice(0, 5).join(" ").toLowerCase();
+              const quoteEnd = quoteWords.slice(-5).join(" ").toLowerCase();
+              
+              // First, try exact match in individual paragraphs
+              for (let i = 0; i < paragraphs.length; i++) {
+                const paraTextLower = (paragraphs[i].text || "").toLowerCase();
+                // Check if quote start or end is in this paragraph
+                if (paraTextLower.includes(quoteStart) || paraTextLower.includes(quoteEnd)) {
+                  findingParaMap[findingId].add(paragraphs[i].paragraph_index);
+                }
+              }
+              
+              // Also try to find quote spanning multiple paragraphs by concatenating them
+              // This handles cases where quote is split across paragraph boundaries
+              for (let i = 0; i < paragraphs.length; i++) {
+                // Try concatenating current paragraph with next 1-2 paragraphs
+                for (let span = 1; span <= 2 && i + span < paragraphs.length; span++) {
+                  const combinedText = paragraphs.slice(i, i + span + 1)
+                    .map(p => (p.text || "").toLowerCase())
+                    .join(" ");
+                  if (combinedText.includes(quoteStart) || combinedText.includes(quoteEnd)) {
+                    // Add all paragraphs in this span
+                    for (let j = i; j <= i + span; j++) {
+                      findingParaMap[findingId].add(paragraphs[j].paragraph_index);
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          
+          docBox.innerHTML = "";
+          for (let i = 0; i < paragraphs.length; i++) {
+            const p = paragraphs[i];
+            const paraEl = document.createElement("div");
+            paraEl.className = "annotated-para";
+            const ranges = [];
+            
+            // Check all findings that might have quote in this paragraph
+            for (const f of findings) {
+              const findingId = f.finding_id;
+              // Only process if this finding's quote appears in this paragraph
+              if (!findingParaMap[findingId] || !findingParaMap[findingId].has(p.paragraph_index)) {
+                continue;
+              }
+              
+              const quote = f.evidence_quote || "";
+              if (!quote) continue;
+              
+              // Try to find quote in current paragraph
+              let paraRanges = buildRangesAnnotated(p.text || "", quote, findingId);
+              
+              // If not found completely, check if quote spans across paragraph boundaries
+              if (paraRanges.length === 0 && quote.length > 20) {
+                const quoteWords = quote.split();
+                const quoteStart = quoteWords.slice(0, Math.min(10, quoteWords.length)).join(" ").toLowerCase();
+                const quoteEnd = quoteWords.slice(-Math.min(10, quoteWords.length)).join(" ").toLowerCase();
+                const paraTextLower = (p.text || "").toLowerCase();
+                
+                // Try to find quote by concatenating with adjacent paragraphs
+                // This handles cases where quote spans multiple paragraphs
+                let foundInSpan = false;
+                for (let span = 0; span <= 2 && !foundInSpan; span++) {
+                  const startIdx = Math.max(0, i - span);
+                  const endIdx = Math.min(paragraphs.length, i + span + 1);
+                  const spanParas = paragraphs.slice(startIdx, endIdx);
+                  
+                  // Build combined text with same separator as backend uses ("\n\n")
+                  const combinedText = spanParas
+                    .map(para => (para.text || "").toLowerCase())
+                    .join("\n\n");
+                  
+                  const quoteLower = quote.toLowerCase();
+                  
+                  // Check if full quote is in combined text
+                  const quoteIdx = combinedText.indexOf(quoteLower);
+                  if (quoteIdx !== -1) {
+                    // Calculate which paragraph(s) contain the quote
+                    let charCount = 0;
+                    for (let paraIdx = 0; paraIdx < spanParas.length; paraIdx++) {
+                      const para = spanParas[paraIdx];
+                      const paraText = (para.text || "").toLowerCase();
+                      const paraStart = charCount;
+                      const paraEnd = charCount + paraText.length;
+                      
+                      // Check if quote overlaps with this paragraph
+                      const quoteEnd = quoteIdx + quoteLower.length;
+                      if (quoteEnd > paraStart && quoteIdx < paraEnd) {
+                        // Quote overlaps with this paragraph
+                        if (para.paragraph_index === p.paragraph_index) {
+                          // This is the current paragraph - calculate exact range
+                          const overlapStart = Math.max(0, quoteIdx - paraStart);
+                          const overlapEnd = Math.min(paraText.length, quoteEnd - paraStart);
+                          ranges.push({ start: overlapStart, end: overlapEnd, id: findingId });
+                          foundInSpan = true;
+                          break;
+                        }
+                      }
+                      
+                      charCount = paraEnd + 2; // +2 for "\n\n" separator
+                    }
+                    if (foundInSpan) break;
+                  }
+                  
+                  // Fallback: check if quote start or end is in combined text
+                  if (!foundInSpan && (combinedText.includes(quoteStart) || combinedText.includes(quoteEnd))) {
+                    // Quote spans multiple paragraphs - highlight entire current paragraph if it's part of the span
+                    if (i >= startIdx && i < endIdx) {
+                      ranges.push({ start: 0, end: p.text.length, id: findingId });
+                      foundInSpan = true;
+                      break;
+                    }
+                  }
+                }
+                
+                // If still not found, try simpler fallback
+                if (!foundInSpan) {
+                  // Check if quote start is in current paragraph
+                  if (quoteStart && paraTextLower.includes(quoteStart)) {
+                    // Quote starts here - highlight from start to end of paragraph
+                    const startIdx = paraTextLower.indexOf(quoteStart);
+                    ranges.push({ start: startIdx, end: p.text.length, id: findingId });
+                  }
+                  // Check if quote end is in current paragraph
+                  else if (quoteEnd && paraTextLower.includes(quoteEnd)) {
+                    // Quote ends here - highlight from start of paragraph to end
+                    const endIdx = paraTextLower.indexOf(quoteEnd) + quoteEnd.length;
+                    ranges.push({ start: 0, end: endIdx, id: findingId });
+                  }
+                  // Check if quote is partially in this paragraph (middle part)
+                  else if (i > 0 && i < paragraphs.length - 1) {
+                    const prevP = paragraphs[i - 1];
+                    const nextP = paragraphs[i + 1];
+                    const prevTextLower = (prevP.text || "").toLowerCase();
+                    const nextTextLower = (nextP.text || "").toLowerCase();
+                    // If quote starts in previous and ends in next, this is middle paragraph
+                    if ((quoteStart && prevTextLower.includes(quoteStart)) &&
+                        (quoteEnd && nextTextLower.includes(quoteEnd))) {
+                      // Highlight entire current paragraph as part of spanning quote
+                      ranges.push({ start: 0, end: p.text.length, id: findingId });
+                    }
+                  }
+                }
+              } else {
+                ranges.push(...paraRanges);
+              }
+            }
+            
+            paraEl.innerHTML = renderParagraphWithSubsections(p.text || "", ranges);
+          docBox.appendChild(paraEl);
+          }
+
+          // Group highlights by finding_id so that one logical clause (spanning multiple paragraphs)
+          // is treated as a single step in navigation.
+          let currentHighlightIndex = -1;
+          const allHighlights = Array.from(docBox.querySelectorAll(".hl-inline"));
+          const highlightGroups = [];
+          const seenFindingIds = new Set();
+
+          for (const hl of allHighlights) {
+            const fid = hl.getAttribute("data-finding-id");
+            if (!fid || seenFindingIds.has(fid)) continue;
+            seenFindingIds.add(fid);
+            // All spans belonging to this finding_id
+            const groupElems = allHighlights.filter(h => h.getAttribute("data-finding-id") === fid);
+            highlightGroups.push({ findingId: fid, elems: groupElems });
+          }
+
+          function showHighlightAnnotated(index) {
+            if (index < 0 || index >= highlightGroups.length) return;
+            // Clear previous active state
+            allHighlights.forEach(h => h.classList.remove("active"));
+
+            const group = highlightGroups[index];
+            // Activate all spans for this finding
+            for (const hl of group.elems) {
+              hl.classList.add("active");
+            }
+
+            const fid = group.findingId;
+            renderAnnotatedDetails(findingsById[fid]);
+
+            // Scroll to the first span in the group
+            const first = group.elems[0];
+            if (first) {
+              first.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+            currentHighlightIndex = index;
+            const nextBtn = el("nextClauseBtnInline");
+            if (nextBtn) {
+              nextBtn.style.display = highlightGroups.length > 0 ? "inline-block" : "none";
+              const total = highlightGroups.length;
+              const humanIndex = index + 1;
+              nextBtn.textContent = `Move to next unfair clause (${humanIndex}/${total})`;
+            }
+          }
+          docBox.addEventListener("click", (e) => {
+            const t = e.target;
+            if (t && t.classList.contains("hl-inline")) {
+              const fid = t.getAttribute("data-finding-id");
+              if (!fid) return;
+              const idx = highlightGroups.findIndex(g => g.findingId === fid);
+              if (idx !== -1) {
+                showHighlightAnnotated(idx);
+              }
+            }
+          });
+          const nextBtn = el("nextClauseBtnInline");
+          if (nextBtn && highlightGroups.length > 0) {
+            nextBtn.addEventListener("click", () => {
+              const nextIdx = (currentHighlightIndex + 1) % highlightGroups.length;
+              showHighlightAnnotated(nextIdx);
+            });
+            // Show button if there are any highlights
+            if (highlightGroups.length > 0) {
+              nextBtn.style.display = "inline-block";
+              // Show first highlight on load
+              if (currentHighlightIndex === -1) {
+                showHighlightAnnotated(0);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load annotated view:", e);
+        }
+      }
+
       function startPolling(jobId) {
         if (pollTimer) clearInterval(pollTimer);
-        el("jobProgress").style.display = "block";
+        el("jobProgress").style.display = "none";
         const debugWindowRequested = !!el("enableDebugWindow")?.checked;
         pollTimer = setInterval(async () => {
           try {
             const job = await fetchJob(jobId);
             el("jobProgress").value = job.progress ?? 0;
-            setStatus(`Status: ${job.status} | Stage: ${job.stage ?? "-"} | Progress: ${job.progress ?? 0}%`);
-            // enable/disable cancel button
             const st = String(job.status || "");
+            const spinner = el("statusSpinner");
+            if (spinner) {
+              spinner.style.display = (st === "queued" || st === "running") ? "block" : "none";
+            }
+            let title = "Status";
+            let statusLine = "";
+            // enable/disable cancel button
             el("cancelBtn").disabled = !(st === "queued" || st === "running");
             // live trace (optional)
             if (debugWindowRequested) {
@@ -396,18 +1550,29 @@
               el("liveTrace").style.display = "none";
               el("liveTraceBox").innerHTML = "";
             }
+            if (st === "queued" || st === "running") {
+              title = "Please wait a moment. We are analyzing your document.";
+              statusLine = "Processing…";
+            } else if (st === "done") {
+              title = "Done";
+              statusLine = "Analysis complete. Results below.";
+            } else if (st === "failed" || st === "cancelled") {
+              title = "Stopped";
+              statusLine = `${st === "cancelled" ? "Cancelled" : "Failed"}: ${job.error || "Unknown error"}`;
+            } else {
+              title = "Status";
+            }
+            setStatus(statusLine, title);
             if (job.status === "done") {
               clearInterval(pollTimer);
               const result = await fetchResult(jobId);
               renderResult(result);
-              el("downloadBtn").disabled = false;
               el("cancelBtn").disabled = true;
               el("liveTrace").style.display = "none";
               el("liveTraceBox").innerHTML = "";
             }
             if (job.status === "failed" || job.status === "cancelled") {
               clearInterval(pollTimer);
-              setStatus(`${job.status === "cancelled" ? "Cancelled" : "Failed"}: ${job.error || "Unknown error"}`);
               el("cancelBtn").disabled = true;
               el("liveTrace").style.display = "none";
               el("liveTraceBox").innerHTML = "";
@@ -453,23 +1618,295 @@
       el("provider").addEventListener("change", updateProviderUI);
       updateProviderUI();
 
+      // Show file name when user selects a file
+      el("pdfFile").addEventListener("change", (ev) => {
+        const fileInput = ev.target;
+        const fileInfo = el("fileInfo");
+        if (fileInput.files && fileInput.files.length > 0) {
+          if (fileInfo) {
+            fileInfo.style.display = "block";
+            fileInfo.style.color = "var(--accent)";
+            fileInfo.innerHTML = `✓ File selected: <strong>${fileInput.files[0].name}</strong>`;
+          }
+        } else {
+          if (fileInfo) {
+            fileInfo.style.display = "none";
+          }
+        }
+      });
+
+      // Settings form handlers
+      el("settingsProvider").addEventListener("change", updateSettingsProviderUI);
+      updateSettingsProviderUI();
+
+      el("settingsForm").addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        if (saveSettings()) {
+          const statusEl = el("settingsStatus");
+          const titleEl = el("settingsStatusTitle");
+          statusEl.classList.remove("hidden");
+          titleEl.textContent = "Settings saved successfully!";
+          statusEl.style.background = "#ecfdf3";
+          statusEl.style.borderColor = "#bbf7d0";
+          statusEl.style.color = "#166534";
+          setTimeout(() => {
+            statusEl.classList.add("hidden");
+          }, 3000);
+        } else {
+          const statusEl = el("settingsStatus");
+          const titleEl = el("settingsStatusTitle");
+          statusEl.classList.remove("hidden");
+          titleEl.textContent = "Failed to save settings. Please try again.";
+          statusEl.style.background = "#fef2f2";
+          statusEl.style.borderColor = "#fecaca";
+          statusEl.style.color = "#991b1b";
+        }
+      });
+
+      el("clearSettingsBtn").addEventListener("click", () => {
+        if (confirm("Are you sure you want to clear all saved settings?")) {
+          if (clearSettings()) {
+            const statusEl = el("settingsStatus");
+            const titleEl = el("settingsStatusTitle");
+            statusEl.classList.remove("hidden");
+            titleEl.textContent = "Settings cleared.";
+            statusEl.style.background = "#f8fafc";
+            statusEl.style.borderColor = "#e5e7eb";
+            statusEl.style.color = "#64748b";
+            setTimeout(() => {
+              statusEl.classList.add("hidden");
+            }, 3000);
+          }
+        }
+      });
+
+      function closeLoginModal() {
+        const modal = el("loginModal");
+        if (modal) {
+          modal.classList.add("hidden");
+          modal.style.display = "none";
+        }
+        const error = el("loginError");
+        if (error) {
+          error.classList.add("hidden");
+          error.innerHTML = "";
+        }
+        // Clear form fields
+        const usernameEl = el("loginUsername");
+        const passwordEl = el("loginPassword");
+        if (usernameEl) usernameEl.value = "";
+        if (passwordEl) passwordEl.value = "";
+      }
+
+      // Login handlers
+      el("loginBtn").addEventListener("click", () => {
+        const modal = el("loginModal");
+        if (modal) {
+          modal.classList.remove("hidden");
+          modal.style.display = "flex";
+        }
+        // Clear any previous errors
+        const error = el("loginError");
+        if (error) {
+          error.classList.add("hidden");
+          error.innerHTML = "";
+        }
+      });
+      
+      // Close modal when clicking on backdrop (outside the card)
+      const loginModal = el("loginModal");
+      if (loginModal) {
+        loginModal.addEventListener("click", (ev) => {
+          if (ev.target === loginModal || ev.target.getAttribute("data-modal-backdrop") === "true") {
+            closeLoginModal();
+          }
+        });
+      }
+      
+      // Cancel button handler
+      const cancelBtn = el("loginCancelBtn");
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          closeLoginModal();
+        });
+      } else {
+        console.warn("loginCancelBtn not found");
+      }
+
+      el("logoutBtn").addEventListener("click", () => {
+        clearAuthInfo();
+        updateLoginStatus();
+      });
+
+      el("loginForm").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const username = el("loginUsername").value.trim();
+        const password = el("loginPassword").value.trim();
+        const errorEl = el("loginError");
+        
+        try {
+          const fd = new FormData();
+          fd.append("username", username);
+          fd.append("password", password);
+          const res = await fetch("/auth/login", { method: "POST", body: fd });
+          const data = await res.json();
+          
+          if (res.ok && data.success) {
+            saveAuthInfo(data);
+            updateLoginStatus();
+            
+            // Clear form
+            el("loginUsername").value = "";
+            el("loginPassword").value = "";
+            if (errorEl) errorEl.classList.add("hidden");
+            
+            // Close modal
+            const modal = el("loginModal");
+            if (modal) {
+              modal.classList.add("hidden");
+              modal.style.display = "none";
+            }
+            
+            // If demo account, clear API key field (will use server key)
+            if (data.is_demo) {
+              el("apiKey").value = "";
+            }
+          } else {
+            if (errorEl) {
+              errorEl.classList.remove("hidden");
+              errorEl.innerHTML = `<div class="title">Login failed</div><div>Логин некорректный, try again</div>`;
+            }
+          }
+        } catch (e) {
+          console.error("Login error:", e);
+          if (errorEl) {
+            errorEl.classList.remove("hidden");
+            errorEl.innerHTML = `<div class="title">Error</div><div>Failed to connect to server</div>`;
+          }
+        }
+      });
+
+      // Load settings on page load
+      loadSettingsToAnalyzeForm();
+      updateLoginStatus();
+
+      if (window.location.hash === "#analyze") {
+        showAnalyze();
+        loadSettingsToAnalyzeForm();
+      } else if (window.location.hash === "#settings") {
+        showSettings();
+      }
+      el("ctaBtn").addEventListener("click", () => {
+        window.location.hash = "#analyze";
+        showAnalyze();
+        loadSettingsToAnalyzeForm();
+      });
+      el("settingsBtn").addEventListener("click", () => {
+        window.location.hash = "#settings";
+        showSettings();
+      });
+      el("settingsBackBtn").addEventListener("click", () => {
+        window.location.hash = "#";
+        showHero();
+      });
+      el("exampleBtn").addEventListener("click", async () => {
+        // First, navigate to analyze section
+        window.location.hash = "#analyze";
+        showAnalyze();
+        
+        // Wait a bit for DOM to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Load example contract
+        try {
+          const response = await fetch("/static/example_contract.pdf", { 
+            credentials: "include"
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to load example contract: ${response.status} ${errorText.substring(0, 100)}`);
+          }
+          const blob = await response.blob();
+          const file = new File([blob], "example_contract.pdf", { type: "application/pdf" });
+          
+          // Set file in input
+          const fileInput = el("pdfFile");
+          if (!fileInput) {
+            console.error("File input not found");
+            alert("File input not found. Please refresh the page.");
+            return;
+          }
+          
+          try {
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            
+            // Verify file was set
+            if (!fileInput.files || fileInput.files.length === 0) {
+              console.error("Failed to set file in input - files array is empty");
+              alert("Failed to load example contract into form. Please try uploading your own file.");
+              return;
+            }
+            
+            console.log("Example contract loaded successfully:", fileInput.files[0].name);
+            
+            // Show file name to user
+            const fileInfo = el("fileInfo");
+            if (fileInfo) {
+              fileInfo.style.display = "block";
+              fileInfo.style.color = "var(--accent)";
+              fileInfo.innerHTML = `✓ Example contract loaded: <strong>${file.name}</strong>`;
+            }
+            
+            // Trigger change event to ensure form validation passes
+            const changeEvent = new Event("change", { bubbles: true, cancelable: true });
+            fileInput.dispatchEvent(changeEvent);
+            
+            // Also trigger input event for better compatibility
+            const inputEvent = new Event("input", { bubbles: true, cancelable: true });
+            fileInput.dispatchEvent(inputEvent);
+          } catch (err) {
+            console.error("Error setting file in input:", err);
+            alert("Failed to load example contract. Please try uploading your own file.");
+          }
+        } catch (error) {
+          console.error("Failed to load example contract:", error);
+          alert("Failed to load example contract. Please try uploading your own file.");
+        }
+      });
+      el("backBtn").addEventListener("click", () => {
+        window.location.hash = "#";
+        showHero();
+      });
+
       el("uploadForm").addEventListener("submit", async (ev) => {
         ev.preventDefault();
+        showAnalyze();
         const file = el("pdfFile").files[0];
         if (!file) return;
-        el("downloadBtn").disabled = true;
-        el("cancelBtn").disabled = true;
+              el("cancelBtn").disabled = true;
         el("result").style.display = "none";
-        setStatus("Uploading...");
+        const split = el("splitView");
+        if (split) split.classList.add("hidden");
+        const pdfContainer = el("pdfContainer");
+        if (pdfContainer) pdfContainer.innerHTML = "";
+        renderDetailCard(null);
+        setStatus("Uploading...", "Uploading your document");
         try {
           const data = await uploadPdf(file);
           currentJobId = data.job_id;
           el("jobInfo").textContent = `Job ID: ${currentJobId}`;
-          setStatus(`Queued. Limits: pages<=${data.limits.max_pages}, paragraphs<=${data.limits.max_paragraphs}, file<=${data.limits.max_file_mb}MB`);
+          setStatus(
+            "Queued. Starting analysis…",
+            "Please wait a moment. We are analyzing your document."
+          );
           el("cancelBtn").disabled = false;
           startPolling(currentJobId);
         } catch (e) {
-          setStatus(String(e));
+          setStatus(String(e), "Error");
         }
       });
 
@@ -478,23 +1915,12 @@
         el("cancelBtn").disabled = true;
         try {
           await cancelJob(currentJobId);
-          setStatus("Cancelling...");
+          setStatus("Cancelling...", "Stopping analysis");
         } catch (e) {
-          setStatus(String(e));
+          setStatus(String(e), "Error");
         }
       });
 
-      el("downloadBtn").addEventListener("click", async () => {
-        if (!currentJobId) return;
-        const result = await fetchResult(currentJobId);
-        const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `result_${currentJobId}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-      });
     </script>
   </body>
 </html>

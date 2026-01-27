@@ -30,24 +30,54 @@ _JSON_START = re.compile(r"\{", re.MULTILINE)
 
 _MANY_NEWLINES = re.compile(r"\n{3,}")
 _TRAILING_WS = re.compile(r"[ \t]+\n")
-_PAGE_NUMBER_LINE = re.compile(r"^\s*-\s*\d+\s*-\s*$", re.MULTILINE)
+# Standalone page number lines: "- 11 -" or "Page - 11 -"
+_PAGE_NUMBER_LINE = re.compile(r"^\s*(?:Page\s*)?-\s*\d+\s*-\s*$", re.MULTILINE | re.IGNORECASE)
+# "Page -9-" or "Page - 9 -" style fragments (often merged with continuation across page break)
+_PAGE_NUMBER_FRAGMENT = re.compile(r"Page\s*-\s*\d+\s*-\s*", re.IGNORECASE)
+# Control chars (except \n \t) and black squares → space (display-safe; no meaning change)
+_CONTROL_AND_BLACK = re.compile(r"[\u0000-\u0008\u000b\u000e-\u001f\u007f\u25A0-\u25FF]")
 
 
 def normalize_llm_text(text: str) -> str:
     """
-    Normalize noisy PDF-ish text before sending to an LLM.
-    Keeps content but reduces prompt bloat and improves legibility.
+    Normalize noisy PDF-ish text for LLM, display, and quote matching.
+
+    Preserves meaning: only whitespace, line endings, and PDF artefacts are changed.
+    Use this same normalized text everywhere (LLM input, PDF, frontend) so quote
+    matching is exact and we avoid raw vs normalized mismatches.
+    
+    Removes/replaces:
+    - Control characters (except \n, \t) → space
+    - Black squares and geometric shapes (Unicode \u25A0-\u25FF) → space
+    - Greek semicolon (\u037E) → regular semicolon
+    - Page number artefacts ("- N -", "Page - N -")
+    - Invalid/undisplayable characters → space (for safety)
     """
     s = (text or "")
     s = s.replace("\r\n", "\n").replace("\r", "\n")
-    # Form-feed/page-break artefacts
     s = s.replace("\x0c", "\n")
-    # Remove standalone page-number lines like "- 11 -"
+    s = s.replace("\u037E", ";")
     s = _PAGE_NUMBER_LINE.sub("", s)
-    # Trim trailing spaces per-line
+    s = _PAGE_NUMBER_FRAGMENT.sub("", s)
     s = _TRAILING_WS.sub("\n", s)
-    # Collapse huge blank areas
     s = _MANY_NEWLINES.sub("\n\n", s)
+    s = _CONTROL_AND_BLACK.sub(" ", s)
+    # Additional safety: replace any remaining invalid/undisplayable characters with space
+    # This includes surrogate pairs, private use characters, etc.
+    # Keep printable Unicode characters (letters, numbers, punctuation, symbols, spaces)
+    import unicodedata
+    result = []
+    for char in s:
+        # Keep newlines and tabs
+        if char in ("\n", "\t"):
+            result.append(char)
+        # Check if character is printable or is a valid Unicode character
+        elif unicodedata.category(char)[0] in ("L", "N", "P", "S", "Z"):  # Letter, Number, Punctuation, Symbol, Separator
+            result.append(char)
+        else:
+            # Replace invalid/undisplayable characters with space
+            result.append(" ")
+    s = "".join(result)
     return s.strip()
 
 
@@ -120,6 +150,7 @@ class LLMConfig:
     base_url: Optional[str] = None
     stage1_include_descriptions: bool = False
     message_content_mode: str = "string"  # "string" | "parts"
+    temperature: float = 0.0
 
 
 class LLMRunner:
@@ -140,7 +171,6 @@ class LLMRunner:
         )
         self.category_ids = [c["id"] for c in categories_payload.get("categories", [])]
 
-        # Mapping for the single-classifier mode (subset of CUAD categories)
         self.redflag_category_id_by_name: dict[str, str] = {
             "Termination For Convenience": "termination_for_convenience",
             "Uncapped Liability": "uncapped_liability",
@@ -157,9 +187,14 @@ class LLMRunner:
         """
         Build few-shot examples for the single-classifier prompt from CUAD cache.
         Evidence is sourced from CUAD_v1.json answers and is guaranteed to be inside the snippet.
+        
+        NOTE: To modify few-shot example templates (reasoning, explanation, etc.),
+        edit the if/elif blocks below (lines ~184-235).
+        The structure and data come from CUAD, but the template values can be customized.
         """
+        from .prompts import build_redflag_fewshot_example
+
         blocks: list[str] = []
-        # Deterministic order by category name
         for name in [
             "Termination For Convenience",
             "Uncapped Liability",
@@ -180,7 +215,6 @@ class LLMRunner:
                 # Keep evidence check strict: if normalization breaks substring, fall back to original snippet.
                 if evidence not in snippet_clean:
                     snippet_clean = snippet.strip()
-                # Minimal, category-grounded reasoning templates (few-shot only).
                 if name == "Termination For Convenience":
                     reasoning = [
                         "Evidence grants termination without cause / for convenience.",
@@ -198,8 +232,8 @@ class LLMRunner:
                     ]
                 elif name == "Most Favored Nation":
                     reasoning = [
-                        "Evidence contains 'most favored' / 'at least as favorable' parity language.",
-                        "This commits the party to best-terms treatment compared to others.",
+                        "Evidence contains 'most favored', 'uniformly applied', 'equally applied', 'at least as favorable', or similar parity language.",
+                        "This commits the party to best-terms treatment compared to others, or requires uniform application of changes to all parties.",
                     ]
                 elif name == "Audit Rights":
                     reasoning = [
@@ -211,6 +245,28 @@ class LLMRunner:
                         "Evidence transfers ownership via assignment / 'right, title and interest' language.",
                         "This reallocates IP ownership to the counterparty.",
                     ]
+
+                if name == "Uncapped Liability":
+                    explanation = (
+                        "The clause removes or weakens liability limits, which can be unfair if it creates "
+                        "disproportionate exposure without a legitimate interest."
+                    )
+                    legal_refs = [
+                        "Consumer Rights Act 2015, sections 62–68 (fairness test)",
+                        "UK common law on penalty clauses (genuine pre-estimate of loss, proportionality, legitimate interest)",
+                    ]
+                    risk_category = "Penalty"
+                else:
+                    explanation = (
+                        "The clause shifts risk or control in a way that may be unfair to the weaker party "
+                        "depending on context and bargaining position."
+                    )
+                    legal_refs = ["Consumer Rights Act 2015, sections 62–68 (fairness test)"]
+                    risk_category = "Nothing"
+                possible = "May be challenged as unfair and lead to renegotiation, disputes, or non-enforcement."
+                revised = "Replace with a balanced clause that limits scope, duration, and caps exposure."
+                revision_expl = "Adds proportional limits and clarifies mutual obligations."
+                follow_up = "Ask the counterparty to justify the clause and propose a balanced revision."
 
                 blocks.append(
                     f"EXAMPLE {ex_i} (CUAD)\n"
@@ -224,12 +280,68 @@ class LLMRunner:
                     + json.dumps(
                         {
                             "findings": [
-                                {"category": name, "evidence": evidence, "reasoning": reasoning[:2]}
+                                {
+                                    "category": name,
+                                    "quote": evidence,
+                                    "reasoning": reasoning[:2],
+                                    "is_unfair": True,
+                                    "explanation": explanation,
+                                    "legal_references": legal_refs,
+                                    "possible_consequences": possible,
+                                    "risk_assessment": {
+                                        "severity_of_consequences": 2,
+                                        "degree_of_legal_violation": 2,
+                                    },
+                                    "consequences_category": "Unenforceable",
+                                    "risk_category": risk_category,
+                                    "recommended_revision": {
+                                        "revised_clause": revised,
+                                        "revision_explanation": revision_expl,
+                                    },
+                                    "suggested_follow_up": follow_up,
+                                }
                             ]
                         },
                         ensure_ascii=False,
                     )
                     + "\n"
+                )
+
+            # Additionally, inject one synthetic MFN-like example for price-change / uniformly-applied clauses
+            if name == "Most Favored Nation":
+                synthetic_clause = (
+                    "2.4. Prices.\n\n"
+                    "(B) Inflation Price Adjustment. The prices set forth in Section 2.4(a) shall be subject to "
+                    "adjustment annually on the first day of each Product Year beginning in the calendar year 2000 "
+                    "and on the first day of each succeeding Product Year for the remainder of the Term and all "
+                    "renewals of this Agreement in proportion to the increase or decrease in the Consumer Price Index "
+                    "(CPI) as compared to the CPI as it existed on the first day of the Term of this Agreement. "
+                    "The Company also reserves the right to increase or decrease the price per unit based on Company "
+                    "wide changes in unit prices to all distributors of the Company, provided however, that any price "
+                    "changes, other than those based on the CPI, shall be uniformly applied to all distributors of the "
+                    "Products and shall reasonably reflect Company's costs of manufacturing the Products and/or market "
+                    "demand for the Products, provided further than any increase in price based upon market demand shall "
+                    "not be so great as to deprive Distributor of its normal and customary profit margin."
+                )
+                synthetic_evidence = (
+                    "any price changes, other than those based on the CPI, shall be uniformly applied to all "
+                    "distributors of the Products and shall reasonably reflect Company's costs of manufacturing the "
+                    "Products and/or market demand for the Products, provided further than any increase in price based "
+                    "upon market demand shall not be so great as to deprive Distributor of its normal and customary "
+                    "profit margin."
+                )
+                synthetic_question = (
+                    'Highlight the parts (if any) of this contract related to "Most Favored Nation" that should be '
+                    "reviewed by a lawyer. In particular, look for clauses that require uniform application of price "
+                    "changes to all distributors or customers."
+                )
+                blocks.append(
+                    build_redflag_fewshot_example(
+                        "Most Favored Nation",
+                        synthetic_clause,
+                        synthetic_evidence,
+                        synthetic_question,
+                    )
                 )
         return "\n".join(blocks).strip()
 
@@ -261,9 +373,18 @@ class LLMRunner:
         section_path: str,
         max_findings: int,
     ) -> tuple[str, str, dict[str, Any]]:
+        """
+        Build the red flag classification prompt.
+        
+        NOTE: To modify the prompt instructions, edit app/prompts.py
+        This method just assembles the prompt from templates.
+        """
+        from .prompts import get_redflag_system_prompt, format_redflag_prompt
+        
         categories = list(self.redflag_category_id_by_name.keys())
         fewshot = self._redflag_fewshot_block
         defs = self._redflag_definitions_block
+        
         header = (
             "========================\n"
             "FEW-SHOT EXAMPLES (from CUAD_v1.json; examples only, NOT the current document)\n"
@@ -273,56 +394,21 @@ class LLMRunner:
             fewshot_section = header + f"{fewshot}\n"
         else:
             fewshot_section = header + "(none available — few-shot cache is empty or disabled)\n"
-        section_prefix = f"CONTEXT PREFIX: {section_path}\n\n" if section_path else ""
-
-        system = "You are a legal clause classifier for red flag clause types. Output STRICT JSON only."
-        user = f"""
-You are a legal clause classifier for “red flag” clause types.
-
-Knowing only the provided TEXT CHUNK, identify whether it contains any of these categories:
-{chr(10).join("- " + c for c in categories)}
-
-CURRENT DOCUMENT LOCATION (for the chunk you must classify):
-CONTEXT PREFIX: {section_path or "(none)"}
-
-You must return BOTH:
-1) the category (or categories) AND
-2) verbatim evidence quoted from the provided TEXT CHUNK
-3) short reasoning grounded only in the evidence
-
-Rules
-- Evidence MUST be copied verbatim from the provided TEXT CHUNK. Do not paraphrase.
-- Return up to {max_findings} findings per chunk (only the most salient).
-- If nothing matches, return {{"findings": []}}.
-- If you suspect a category but cannot quote clear evidence from the chunk, do NOT guess; return no finding for that category.
-- Keep reasoning brief (1–3 bullets) and tied directly to the evidence.
-
-Output JSON schema:
-{{"findings":[{{"category":"<one of the categories above>","evidence":"<verbatim quote from TEXT CHUNK>","reasoning":["<bullet>"]}}]}}
-
-========================
-CATEGORY DEFINITIONS (from category_descriptions.csv)
-========================
-{defs}
-
-{fewshot_section}
-
-========================
-NOW CLASSIFY THIS INPUT
-========================
-{section_prefix}TEXT CHUNK:
-{text_chunk}
-OUTPUT JSON:
-""".strip()
+        
+        system = get_redflag_system_prompt()
+        user, sections_dict = format_redflag_prompt(
+            categories_list="\n".join("- " + c for c in categories),
+            section_path=section_path or "(none)",
+            max_findings=max_findings,
+            category_definitions=defs,
+            fewshot_section=fewshot_section,
+            text_chunk=text_chunk,
+        )
         sections: dict[str, Any] = {
+            **sections_dict,
             "context_prefix": section_path or "",
-            "text_chunk": text_chunk,
-            "category_definitions": defs,
-            "fewshot_examples": fewshot,
-            "fewshot_available": bool(fewshot),
         }
         return system, user, sections
-
     async def classify_redflags_for_chunk(
         self,
         *,
@@ -334,8 +420,12 @@ OUTPUT JSON:
         """
         Single-classifier mode:
         classify one TEXT CHUNK and return up to 2 findings with verbatim evidence.
+        
+        Note: text_chunk should already be normalized before calling this function.
+        LLM will see normalized text and return quote from it.
         """
-        text_chunk_clean = normalize_llm_text(text_chunk)
+        # Don't normalize again - text_chunk is already normalized in main.py
+        text_chunk_clean = text_chunk
         system, user, sections = self._build_redflag_prompt(
             text_chunk=text_chunk_clean,
             section_path=section_path,
@@ -343,17 +433,52 @@ OUTPUT JSON:
         )
 
         out, raw = await self._call_json_and_raw(self.cfg.model_stage2, system, user, RedFlagChunkOutput)
-        # Enforce constraints server-side:
-        cleaned: list[RedFlagFindingLLM] = []
-        for f in out.findings[:max_findings]:
-            # Evidence must be verbatim substring of the chunk.
-            if not f.evidence or f.evidence not in text_chunk_clean:
-                continue
-            cleaned.append(f)
-        out.findings = cleaned[:max_findings]
+        
+        # Log what we got from parsing
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"After _call_json_and_raw: out.findings type={type(out.findings)}, "
+            f"len={len(out.findings) if isinstance(out.findings, list) else 'N/A'}, "
+            f"value={out.findings if isinstance(out.findings, list) and len(out.findings) <= 2 else 'too long'}"
+        )
+        
+        # Ensure findings is a list (not None)
+        if out.findings is None:
+            logger.warning("out.findings is None, setting to empty list")
+            out.findings = []
+        elif not isinstance(out.findings, list):
+            logger.error(f"out.findings is not a list: {type(out.findings)}, value: {out.findings}")
+            out.findings = []
+        else:
+            original_len = len(out.findings)
+            out.findings = out.findings[:max_findings]
+            if original_len > max_findings:
+                logger.warning(f"Truncated findings from {original_len} to {max_findings}")
+        
+        # Log findings (only raw output, no text_chunk) for debugging
+        # (logger already imported above)
+        if not out.findings:
+            logger.warning(
+                f"LLM returned empty findings. Temperature={self.cfg.temperature}, "
+                f"Raw output length={len(raw)}"
+            )
+            if raw:
+                logger.warning(f"LLM raw output: {raw}")
+        else:
+            logger.info(
+                f"LLM returned {len(out.findings)} findings. Raw output length={len(raw)}"
+            )
+            if raw:
+                logger.info(f"LLM raw output: {raw}")
+            # Log each finding's raw data
+            for i, f in enumerate(out.findings):
+                logger.debug(
+                    f"Finding {i+1}: category={f.category}, quote_length={len(f.quote or '')}, "
+                    f"quote_preview={f.quote[:100] if f.quote else 'EMPTY'}"
+                )
         prompt: Optional[dict[str, str]] = None
         if return_prompt:
-            # This dict is for debug only. It can include document text.
             prompt = {"system": system, "user": user, "sections": sections}  # type: ignore[assignment]
         return out, raw, prompt
 
@@ -388,17 +513,188 @@ OUTPUT JSON:
                     kwargs: dict[str, Any] = {}
                     if use_response_format:
                         kwargs["response_format"] = {"type": "json_object"}
+                    # Create the LLM call as a task so it can be cancelled
                     resp = await self.client.chat.completions.create(
                         model=model,
                         messages=self._build_messages(system=system, user=user),
-                        temperature=0.0 if attempt > 0 else 0.2,
+                        temperature=self.cfg.temperature,
                         **kwargs,
                     )
                 text = (resp.choices[0].message.content or "").strip()
                 last_text = text
                 blob = extract_first_json_object(text) or ""
+                if not blob:
+                    if schema == RedFlagChunkOutput:
+                        return RedFlagChunkOutput(findings=[]), (last_text or "")
+                    raise ValueError("No JSON object found in LLM response")
                 data = json.loads(blob)
-                parsed = schema.model_validate(data)
+                try:
+                    parsed = schema.model_validate(data)
+                    # Log successful parsing for debugging
+                    if schema == RedFlagChunkOutput:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        findings_count = len(parsed.findings) if parsed.findings else 0
+                        data_findings_count = len(data.get('findings', [])) if isinstance(data, dict) else 0
+                        logger.info(
+                            f"Successfully parsed RedFlagChunkOutput: {findings_count} findings. "
+                            f"Data has {data_findings_count} findings. "
+                            f"Data findings type: {type(data.get('findings')) if isinstance(data, dict) else 'N/A'}, "
+                            f"Parsed findings type: {type(parsed.findings)}"
+                        )
+                        # If data has findings but parsed doesn't, this is a problem - trigger salvage
+                        if data_findings_count > 0 and findings_count == 0:
+                            logger.error(
+                                f"CRITICAL: Data has {data_findings_count} findings but parsed has 0! "
+                                f"Data findings: {data.get('findings', [])[:2] if isinstance(data, dict) else 'N/A'}. "
+                                f"Triggering salvage logic..."
+                            )
+                            # Force ValidationError to trigger salvage logic
+                            findings_data = data.get('findings', []) if isinstance(data, dict) else []
+                            if findings_data:
+                                # Manually trigger salvage by raising a ValidationError
+                                # ValidationError is already imported at top of file
+                                raise ValidationError.from_exception_data(
+                                    "RedFlagChunkOutput",
+                                    [{"type": "value_error", "loc": ("findings",), "msg": "Findings lost during validation", "input": findings_data}]
+                                )
+                except ValidationError as ve:
+                    # Log validation error for debugging
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Validation error parsing LLM response: {ve}. "
+                        f"Data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}. "
+                        f"Data findings count: {len(data.get('findings', [])) if isinstance(data, dict) else 0}. "
+                        f"Attempting to salvage findings..."
+                    )
+                    if schema == RedFlagChunkOutput and "findings" in data:
+                        findings_data = data.get("findings", [])
+                        salvaged_findings = []
+                        for f_data in findings_data:
+                            try:
+                                # Normalize consequences_category to match Literal type exactly
+                                consequences_cat_raw = f_data.get("consequences_category", "Nothing")
+                                consequences_cat = "Nothing"  # Default
+                                
+                                if isinstance(consequences_cat_raw, str):
+                                    cat_lower = consequences_cat_raw.lower().strip()
+                                    # Map to exact Literal values (case-sensitive matching)
+                                    if cat_lower == "unenforceable":
+                                        consequences_cat = "Unenforceable"
+                                    elif cat_lower == "invalid":
+                                        consequences_cat = "Invalid"
+                                    elif cat_lower == "void":
+                                        consequences_cat = "Void"
+                                    elif cat_lower == "voidable":
+                                        consequences_cat = "Voidable"
+                                    elif cat_lower == "nothing":
+                                        consequences_cat = "Nothing"
+                                    elif consequences_cat_raw == "Unenforceable":  # Already correct
+                                        consequences_cat = "Unenforceable"
+                                    elif consequences_cat_raw == "Invalid":
+                                        consequences_cat = "Invalid"
+                                    elif consequences_cat_raw == "Void":
+                                        consequences_cat = "Void"
+                                    elif consequences_cat_raw == "Voidable":
+                                        consequences_cat = "Voidable"
+                                    else:
+                                        # Default to Nothing if unknown
+                                        import logging
+                                        logger = logging.getLogger(__name__)
+                                        logger.warning(f"Unknown consequences_category: '{consequences_cat_raw}', defaulting to 'Nothing'")
+                                        consequences_cat = "Nothing"
+                                
+                                # Normalize risk_category to match Literal type exactly
+                                risk_cat = f_data.get("risk_category", "Nothing")
+                                if isinstance(risk_cat, str):
+                                    cat_lower = risk_cat.lower()
+                                    # Map to exact Literal values
+                                    if cat_lower == "penalty":
+                                        risk_cat = "Penalty"
+                                    elif cat_lower == "criminal liability":
+                                        risk_cat = "Criminal liability"
+                                    elif "failure" in cat_lower and "obligations" in cat_lower:
+                                        risk_cat = "Failure of the other party to perform obligations on time"
+                                    elif cat_lower == "nothing":
+                                        risk_cat = "Nothing"
+                                    else:
+                                        # Default to Nothing if unknown
+                                        risk_cat = "Nothing"
+                                
+                                # Normalize risk_assessment values (must be 0-3)
+                                risk_assessment = f_data.get("risk_assessment", {})
+                                if isinstance(risk_assessment, dict):
+                                    severity = risk_assessment.get("severity_of_consequences", 0)
+                                    violation = risk_assessment.get("degree_of_legal_violation", 0)
+                                    # Clamp to valid range [0, 3]
+                                    severity = max(0, min(3, int(severity) if isinstance(severity, (int, float)) else 0))
+                                    violation = max(0, min(3, int(violation) if isinstance(violation, (int, float)) else 0))
+                                    risk_assessment = {"severity_of_consequences": severity, "degree_of_legal_violation": violation}
+                                else:
+                                    risk_assessment = {"severity_of_consequences": 0, "degree_of_legal_violation": 0}
+                                
+                                # Double-check that consequences_cat is correct before creating
+                                if consequences_cat not in ("Invalid", "Unenforceable", "Void", "Voidable", "Nothing"):
+                                    import logging
+                                    logger = logging.getLogger(__name__)
+                                    logger.error(f"INVALID consequences_cat value: '{consequences_cat}', defaulting to 'Nothing'")
+                                    consequences_cat = "Nothing"
+                                
+                                # Log what we're trying to create
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.info(
+                                    f"Salvaging finding: category={f_data.get('category')}, "
+                                    f"consequences_cat='{consequences_cat}' (type: {type(consequences_cat)}, "
+                                    f"in valid list: {consequences_cat in ('Invalid', 'Unenforceable', 'Void', 'Voidable', 'Nothing')}), "
+                                    f"risk_cat='{risk_cat}', risk_assessment={risk_assessment}"
+                                )
+                                
+                                f_data_fixed = {
+                                    "category": f_data.get("category", "Termination For Convenience"),
+                                    "quote": f_data.get("quote") or f_data.get("evidence") or "",
+                                    "reasoning": f_data.get("reasoning", []),
+                                    "is_unfair": f_data.get("is_unfair", True),
+                                    "explanation": f_data.get("explanation", ""),
+                                    "legal_references": f_data.get("legal_references", []),
+                                    "possible_consequences": f_data.get("possible_consequences", ""),
+                                    "risk_assessment": risk_assessment,
+                                    "consequences_category": consequences_cat,  # Use normalized value
+                                    "risk_category": risk_cat,
+                                    "recommended_revision": f_data.get("recommended_revision", {"revised_clause": "", "revision_explanation": ""}),
+                                    "suggested_follow_up": f_data.get("suggested_follow_up", ""),
+                                }
+                                
+                                # Verify the value one more time
+                                if f_data_fixed["consequences_category"] not in ("Invalid", "Unenforceable", "Void", "Voidable", "Nothing"):
+                                    logger.error(f"CRITICAL: f_data_fixed has invalid consequences_category: '{f_data_fixed['consequences_category']}'")
+                                    f_data_fixed["consequences_category"] = "Nothing"
+                                
+                                salvaged_findings.append(RedFlagFindingLLM(**f_data_fixed))
+                            except Exception as salvage_err:
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.warning(
+                                    f"Failed to salvage finding: {salvage_err}. "
+                                    f"consequences_cat was set to: '{consequences_cat}', "
+                                    f"risk_assessment: {risk_assessment}, "
+                                    f"f_data consequences_category: '{f_data.get('consequences_category')}'"
+                                )
+                                import traceback
+                                logger.debug(f"Salvage error traceback: {traceback.format_exc()}")
+                                continue
+                        if salvaged_findings:
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.info(f"Salvaged {len(salvaged_findings)} findings from validation error")
+                        parsed = RedFlagChunkOutput(findings=salvaged_findings)
+                    else:
+                        # No findings to salvage, but validation failed - log the error
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"Validation error but no findings to salvage: {ve}")
+                        raise
                 if extra_validator is not None:
                     extra_validator(parsed)
                 return parsed, (last_text or "")
@@ -483,7 +779,6 @@ OUTPUT JSON:
             cleaned_probs.append(Stage1Prob(category_id=cid, prob=probs[cid]))
         out.category_probs = cleaned_probs
 
-        # Normalize and validate selected categories (must pass threshold)
         cleaned_cats: list[Stage1Category] = []
         for item in out.categories or []:
             cid = self._normalize_stage1_category_id(item.category_id)
@@ -638,7 +933,6 @@ MAIN section paragraphs (use these for evidence indices):
             t_router=t_router,
         )
         if invalid:
-            # Pass 2 (strict): try once more if the model invented category ids.
             system2, user2 = self._build_stage1_prompt(
                 main_paragraphs=main_paragraphs,
                 context_paragraphs=context_paragraphs,
