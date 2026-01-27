@@ -1,0 +1,12 @@
+[
+  {
+    "clause": "EXHIBIT 10.6\n\n                              DISTRIBUTOR AGREEMENT\n\n         THIS  DISTRIBUTOR  AGREEMENT (the  \"Agreement\")  is made by and between Electric City Corp.,  a Delaware  corporation  (\"Company\")  and Electric City of Illinois LLC (\"Distributor\") this 7th day of September, 1999.",
+    "question": "Highlight the parts (if any) of this contract related to \"Document Name\" that should be reviewed by a lawyer. Details: The name of the contract",
+    "evidence": "DISTRIBUTOR AGREEMENT"
+  },
+  {
+    "clause": "CERTAIN PORTIONS OF THIS DOCUMENT. EACH SUCH PORTION,  WHICH HAS BEEN OMITTED HEREIN AND REPLACED WITH AN ASTERISK [*], HAS BEEN FILED SEPARATELY WITH THE  SECURITIES AND EXCHANGE COMMISSION.     PROMOTION AND DISTRIBUTION AGREEMENT     This Promotion and Distribution Agreement including all exhibits (collectively referred to as the \"Agreement\"), effective as of 1 August 2011 (the  \"Effective Date\"), is made by and between Whitesmoke Inc., with registered offices/principle place of business at 501 Silverside Road",
+    "question": "Highlight the parts (if any) of this contract related to \"Document Name\" that should be reviewed by a lawyer. Details: The name of the contract",
+    "evidence": "Promotion and Distribution Agreement"
+  }
+]
