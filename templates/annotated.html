@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Annotated View</title>
+    <style>
+      :root {
+        --bg: #f5f7fb;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --card: #ffffff;
+        --border: #e5e7eb;
+        --shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+        --hl: #fef08a;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+      .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
+      .muted { color: var(--muted); }
+      .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .doc { max-height: 80vh; overflow: auto; font-size: 14px; line-height: 1.5; }
+      .para { margin-bottom: 10px; padding: 6px 8px; border-radius: 8px; }
+      .para:hover { background: #f8fafc; }
+      .hl { background: var(--hl); border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; }
+      .hl:hover { background: #fde047; }
+      .hl.active { background: #fbbf24; border: 2px solid #f59e0b; }
+      .btn { padding: 8px 16px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+      .btn:hover { background: #2563eb; }
+      .detail-field { margin-bottom: 12px; }
+      .detail-field .label { font-weight: 600; margin-bottom: 4px; font-size: 14px; }
+      .detail-field .value,
+      .detail-field div,
+      .detail-field pre,
+      .detail-field ul { font-size: 14px; font-family: inherit; line-height: 1.5; }
+      .detail-field pre { white-space: pre-wrap; margin: 0; }
+      @media (max-width: 980px) {
+        .split { grid-template-columns: 1fr; }
+        .doc { max-height: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <h2>Detailed explanation of unfair clauses</h2>
+        <p class="muted" style="margin-top: 8px; margin-bottom: 16px;">Click on a highlighted clause to view detailed analysis.</p>
+        <p id="status" class="muted" style="margin-top: 0;">Loading…</p>
+        <div style="margin-bottom: 12px;">
+          <button id="nextClauseBtn" class="btn" style="display:none; padding: 8px 16px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">Next unfair clause →</button>
+        </div>
+        <div class="split">
+          <div class="card doc" id="docBox"></div>
+          <div class="card" id="detailBox">
+            <div class="muted">Click a highlighted clause to view details.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function getJobId() {
+        const m = window.location.pathname.match(/\/job\/([^/]+)\/annotated/);
+        if (m && m[1]) return m[1];
+        const params = new URLSearchParams(window.location.search);
+        return params.get("job_id");
+      }
+
+      function buildRanges(text, quote, findingId) {
+        const ranges = [];
+        if (!quote) return ranges;
+        const t = normalizeDisplay(text);
+        const q = normalizeDisplay(quote);
+        if (!q || q.length < 5) return ranges; // Too short
+        // Try exact match first
+        let start = 0;
+        while (true) {
+          const idx = t.indexOf(q, start);
+          if (idx !== -1) {
+            ranges.push({ start: idx, end: idx + q.length, id: findingId });
+            start = idx + Math.max(1, q.length);
+            continue;
+          }
+          // If exact match fails, try case-insensitive match
+          const tLower = t.toLowerCase();
+          const qLower = q.toLowerCase();
+          const idxLower = tLower.indexOf(qLower, start);
+          if (idxLower !== -1) {
+            ranges.push({ start: idxLower, end: idxLower + q.length, id: findingId });
+            start = idxLower + Math.max(1, q.length);
+            continue;
+          }
+          break;
+        }
+        return ranges;
+      }
+
+      function renderParagraph(text, ranges) {
+        if (!ranges.length) return escapeHtml(text);
+        const sorted = ranges.sort((a, b) => a.start - b.start);
+        let out = "";
+        let cursor = 0;
+        for (const r of sorted) {
+          if (r.start < cursor) continue;
+          out += escapeHtml(text.slice(cursor, r.start));
+          out += `<span class="hl" data-finding-id="${r.id}">${escapeHtml(text.slice(r.start, r.end))}</span>`;
+          cursor = r.end;
+        }
+        out += escapeHtml(text.slice(cursor));
+        return out;
+      }
+
+      function renderDetails(f) {
+        const box = document.getElementById("detailBox");
+        if (!box) return;
+        if (!f) {
+          box.innerHTML = "<div class=\"muted\">No clause selected.</div>";
+          return;
+        }
+        const refs = (f.legal_references || []).map(r => `<li>${escapeHtml(r)}</li>`).join("");
+        box.innerHTML = `
+          <div class="detail-field">
+            <div class="label">Explanation (UK law)</div>
+            <div>${escapeHtml(f.explanation || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Legal references</div>
+            <ul>${refs || "<li>(none)</li>"}</ul>
+          </div>
+          <div class="detail-field">
+            <div class="label">Possible consequences</div>
+            <div>${escapeHtml(f.possible_consequences || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Severity of consequences (0–3)</div>
+            <div>${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Consequences category</div>
+            <div>${escapeHtml(f.consequences_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Risk category</div>
+            <div>${escapeHtml(f.risk_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revised clause</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(f.revised_clause || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revision explanation</div>
+            <div>${escapeHtml(f.revision_explanation || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Suggested Follow-Up for Tenant</div>
+            <div>${escapeHtml(f.suggested_follow_up || "")}</div>
+          </div>
+        `;
+      }
+
+      async function init() {
+        const status = document.getElementById("status");
+        const docBox = document.getElementById("docBox");
+        const jobId = getJobId();
+        if (!jobId) {
+          status.textContent = "Missing job_id.";
+          return;
+        }
+        try {
+          const res = await fetch(`/job/${jobId}/annotated-data`, { credentials: "same-origin" });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "Failed to load");
+
+          const findings = data.findings || [];
+          const findingsById = {};
+          for (const f of findings) {
+            findingsById[f.finding_id] = f;
+          }
+          status.textContent = findings.length
+            ? `Highlighting ${findings.length} clause(s).`
+            : "No unfair clauses found.";
+
+          const paraMap = {};
+          for (const f of findings) {
+            const idx = f.location?.paragraph_index;
+            if (idx == null) continue;
+            paraMap[idx] = paraMap[idx] || [];
+            paraMap[idx].push(f);
+          }
+
+          docBox.innerHTML = "";
+          for (const p of data.paragraphs || []) {
+            const paraEl = document.createElement("div");
+            paraEl.className = "para";
+            const localFindings = paraMap[p.paragraph_index] || [];
+            const ranges = [];
+            for (const f of localFindings) {
+              ranges.push(...buildRanges(p.text || "", f.evidence_quote || "", f.finding_id));
+            }
+            paraEl.innerHTML = renderParagraph(p.text || "", ranges);
+            docBox.appendChild(paraEl);
+          }
+
+          let currentHighlightIndex = -1;
+          const allHighlights = Array.from(docBox.querySelectorAll(".hl"));
+          
+          function showHighlight(index) {
+            if (index < 0 || index >= allHighlights.length) return;
+            allHighlights.forEach(h => h.classList.remove("active"));
+            const hl = allHighlights[index];
+            hl.classList.add("active");
+            const fid = hl.getAttribute("data-finding-id");
+            renderDetails(findingsById[fid]);
+            hl.scrollIntoView({ behavior: "smooth", block: "center" });
+            currentHighlightIndex = index;
+            const nextBtn = document.getElementById("nextClauseBtn");
+            if (nextBtn) {
+              nextBtn.style.display = allHighlights.length > 1 ? "inline-block" : "none";
+              nextBtn.textContent = index < allHighlights.length - 1
+                ? `Next unfair clause (${index + 1}/${allHighlights.length}) →`
+                : `← Previous unfair clause (${index + 1}/${allHighlights.length})`;
+            }
+          }
+
+          docBox.addEventListener("click", (e) => {
+            const t = e.target;
+            if (t && t.classList.contains("hl")) {
+              const idx = allHighlights.indexOf(t);
+              if (idx !== -1) {
+                showHighlight(idx);
+              }
+            }
+          });
+
+          const nextBtn = document.getElementById("nextClauseBtn");
+          if (nextBtn && allHighlights.length > 0) {
+            nextBtn.addEventListener("click", () => {
+              const nextIdx = (currentHighlightIndex + 1) % allHighlights.length;
+              showHighlight(nextIdx);
+            });
+            if (allHighlights.length > 1) {
+              nextBtn.style.display = "inline-block";
+              showHighlight(0);
+            }
+          }
+        } catch (e) {
+          status.textContent = `Failed to load: ${String(e)}`;
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>

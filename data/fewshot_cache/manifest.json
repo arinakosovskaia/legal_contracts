@@ -1,0 +1,174 @@
+{
+  "version": "fewshot_v2",
+  "categories": {
+    "document_name": {
+      "file": "document_name.json",
+      "count": 2
+    },
+    "parties": {
+      "file": "parties.json",
+      "count": 2
+    },
+    "agreement_date": {
+      "file": "agreement_date.json",
+      "count": 2
+    },
+    "effective_date": {
+      "file": "effective_date.json",
+      "count": 2
+    },
+    "expiration_date": {
+      "file": "expiration_date.json",
+      "count": 2
+    },
+    "renewal_term": {
+      "file": "renewal_term.json",
+      "count": 2
+    },
+    "notice_period_to_terminate_renewal": {
+      "file": "notice_period_to_terminate_renewal.json",
+      "count": 2
+    },
+    "governing_law": {
+      "file": "governing_law.json",
+      "count": 2
+    },
+    "most_favored_nation": {
+      "file": "most_favored_nation.json",
+      "count": 2
+    },
+    "non_compete": {
+      "file": "non_compete.json",
+      "count": 0
+    },
+    "exclusivity": {
+      "file": "exclusivity.json",
+      "count": 0
+    },
+    "no_solicit_of_customers": {
+      "file": "no_solicit_of_customers.json",
+      "count": 0
+    },
+    "competitive_restriction_exception": {
+      "file": "competitive_restriction_exception.json",
+      "count": 0
+    },
+    "no_solicit_of_employees": {
+      "file": "no_solicit_of_employees.json",
+      "count": 2
+    },
+    "non_disparagement": {
+      "file": "non_disparagement.json",
+      "count": 0
+    },
+    "termination_for_convenience": {
+      "file": "termination_for_convenience.json",
+      "count": 0
+    },
+    "rofr_rofo_rofn": {
+      "file": "rofr_rofo_rofn.json",
+      "count": 0
+    },
+    "change_of_control": {
+      "file": "change_of_control.json",
+      "count": 0
+    },
+    "anti_assignment": {
+      "file": "anti_assignment.json",
+      "count": 2
+    },
+    "revenue_profit_sharing": {
+      "file": "revenue_profit_sharing.json",
+      "count": 0
+    },
+    "price_restrictions": {
+      "file": "price_restrictions.json",
+      "count": 0
+    },
+    "minimum_commitment": {
+      "file": "minimum_commitment.json",
+      "count": 2
+    },
+    "volume_restriction": {
+      "file": "volume_restriction.json",
+      "count": 2
+    },
+    "ip_ownership_assignment": {
+      "file": "ip_ownership_assignment.json",
+      "count": 2
+    },
+    "joint_ip_ownership": {
+      "file": "joint_ip_ownership.json",
+      "count": 0
+    },
+    "license_grant": {
+      "file": "license_grant.json",
+      "count": 2
+    },
+    "non_transferable_license": {
+      "file": "non_transferable_license.json",
+      "count": 2
+    },
+    "affiliate_license_licensor": {
+      "file": "affiliate_license_licensor.json",
+      "count": 0
+    },
+    "affiliate_license_licensee": {
+      "file": "affiliate_license_licensee.json",
+      "count": 2
+    },
+    "unlimited_all_you_can_eat_license": {
+      "file": "unlimited_all_you_can_eat_license.json",
+      "count": 2
+    },
+    "irrevocable_or_perpetual_license": {
+      "file": "irrevocable_or_perpetual_license.json",
+      "count": 0
+    },
+    "source_code_escrow": {
+      "file": "source_code_escrow.json",
+      "count": 2
+    },
+    "post_termination_services": {
+      "file": "post_termination_services.json",
+      "count": 2
+    },
+    "audit_rights": {
+      "file": "audit_rights.json",
+      "count": 2
+    },
+    "uncapped_liability": {
+      "file": "uncapped_liability.json",
+      "count": 2
+    },
+    "cap_on_liability": {
+      "file": "cap_on_liability.json",
+      "count": 2
+    },
+    "liquidated_damages": {
+      "file": "liquidated_damages.json",
+      "count": 2
+    },
+    "warranty_duration": {
+      "file": "warranty_duration.json",
+      "count": 0
+    },
+    "insurance": {
+      "file": "insurance.json",
+      "count": 2
+    },
+    "covenant_not_to_sue": {
+      "file": "covenant_not_to_sue.json",
+      "count": 0
+    },
+    "third_party_beneficiary": {
+      "file": "third_party_beneficiary.json",
+      "count": 0
+    }
+  },
+  "source": {
+    "path": "/app/data/CUAD_v1/CUAD_v1.json",
+    "size_bytes": 40128638,
+    "mtime": 1615401644.0
+  }
+}

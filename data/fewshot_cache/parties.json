@@ -1,0 +1,12 @@
+[
+  {
+    "clause": "EXHIBIT 10.6\n\n                              DISTRIBUTOR AGREEMENT\n\n         THIS  DISTRIBUTOR  AGREEMENT (the  \"Agreement\")  is made by and between Electric City Corp.,  a Delaware  corporation  (\"Company\")  and Electric City of Illinois LLC (\"Distributor\") this 7th day of September, 1999.\n\n                                    RECITALS\n\n         A. The  Company's  Business.  The Company is  presently  engaged in the business  of selling an energy  efficiency  device,  which is  referred to as",
+    "question": "Highlight the parts (if any) of this contract related to \"Parties\" that should be reviewed by a lawyer. Details: The two or more parties who signed the contract",
+    "evidence": "Distributor"
+  },
+  {
+    "clause": "mutually  acceptable to the Company                   and Distributor and which is consistent with Exhibit B hereto,                   and  which  incorporates  the  terms  and  provisions  of this                   Distributor  Agreement.  The  Distributor  shall  not order or                   purchase Products from any source other than the Company.  All                   orders shall be subject to acceptance and  confirmation by the                   Company.  Distributor  may  cancel an order  that is  properly                   cancelled by  Distributor's  customer,  unless the Company",
+    "question": "Highlight the parts (if any) of this contract related to \"Exclusivity\" that should be reviewed by a lawyer. Details: Is there an exclusive dealing  commitment with the counterparty? This includes a commitment to procure all “requirements” from one party of certain technology, goods, or services or a prohibition on licensing or selling technology, goods or services to third parties, or a prohibition on  collaborating or working with other parties), whether during the contract or  after the contract ends (or both).",
+    "evidence": "The  Distributor  shall  not order or                   purchase Products from any source other than the Company."
+  }
+]

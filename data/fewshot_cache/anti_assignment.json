@@ -1,0 +1,12 @@
+[
+  {
+    "clause": "person under  circumstances  in                   which it is reasonably  foreseeable that such person is likely                   to purchase or sell such securities.\n\n6.       INTERPRETATION AND ENFORCEMENT\n\n         6.1      Assignment.  No  assignment  of this  Agreement  or any  right                   accruing  hereunder  shall be made by the Distributor in whole                   or in part,  without the prior written consent of the Company,                   which  consent  shall  not  be  unreasonably  withheld.  As  a                   condition  to  obtaining   such   consent,   the  Assignee  of                   Distributor's  interest hereunder shall first agree in writing                   in form and  substance  satisfactory  to the Company",
+    "question": "Highlight the parts (if any) of this contract related to \"Anti-Assignment\" that should be reviewed by a lawyer. Details: Is consent or notice required of a party if the contract is assigned to a third party?",
+    "evidence": "No  assignment  of this  Agreement  or any  right                   accruing  hereunder  shall be made by the Distributor in whole                   or in part,  without the prior written consent of the Company,                   which  consent  shall  not  be  unreasonably  withheld."
+  },
+  {
+    "clause": "written or automated  receipt or electronic log (as applicable). All other notices must be in English, in writing, addressed to the other party's primary contact  and sent to their then current postal address or email address.\n\n11.3 Assignment. [ * ] may [ * ]any of its rights or obligations under this Agreement without the prior written consent of [ * ]. For the  avoidance of doubt, a Change of Control shall be deemed an assignment hereunder unless [ * ] does not exercise its [ * ].\n\n11.4 Force Majeure. Neither party shall be liable for failure to perform or delay in performing any obligation",
+    "question": "Highlight the parts (if any) of this contract related to \"Anti-Assignment\" that should be reviewed by a lawyer. Details: Is consent or notice required of a party if the contract is assigned to a third party?",
+    "evidence": "[ * ] may [ * ]any of its rights or obligations under this Agreement without the prior written consent of [ * ]."
+  }
+]

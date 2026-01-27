@@ -1,0 +1,12 @@
+[
+  {
+    "clause": "agreement reflecting the terms and conditions of this                            Agreement,  may be executed  for each state or entity                            representing each state.\n\n                  1.3      Term.  The term of this  Agreement  shall be ten (10)                            years (the \"Term\")  which shall  commence on the date                            upon which the Company  delivers to  Distributor  the                            last Sample, as defined  hereinafter.  If Distributor                            complies with all of the terms of this Agreement, the                            Agreement  shall be  renewable on an annual basis for                            one (1) year terms for up to  another",
+    "question": "Highlight the parts (if any) of this contract related to \"Expiration Date\" that should be reviewed by a lawyer. Details: On what date will the contract's initial term expire?",
+    "evidence": "The term of this  Agreement  shall be ten (10)                            years (the \"Term\")  which shall  commence on the date                            upon which the Company  delivers to  Distributor  the                            last Sample, as defined  hereinafter."
+  },
+  {
+    "clause": "] following installation of the [ * ], (ii) is [ * ] to the [ * ], and (iii) has [ * ] a [ * ] into the [ * ]; and (c) includes the  correct [ * ]. [ * ] only include those [ * ] which meet the requirements set out in Clause 3.9(c)(i).     \"Term\" means the earlier of: (a) the end of the two year period from the Effective Date to 31 July 2013; or (b) the last day of the calendar month  within which the Maximum Distribution Commitment is reached.     \"Territory\" means those countries listed in Exhibit A, excluding any territory or state prohibited under Clause 11.5.     \"True\" means a \"true\" response (or equivalent positive response) given by the Criteria Checker.\n\n   *Confidential",
+    "question": "Highlight the parts (if any) of this contract related to \"Expiration Date\" that should be reviewed by a lawyer. Details: On what date will the contract's initial term expire?",
+    "evidence": "\"Term\" means the earlier of: (a) the end of the two year period from the Effective Date to 31 July 2013; or (b) the last day of the calendar month  within which the Maximum Distribution Commitment is reached."
+  }
+]
