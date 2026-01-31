@@ -35,8 +35,8 @@ def _slug_id(name: str) -> str:
 
 def load_categories_from_csv(csv_path: Path, *, version: str = "cuad_v1_41_from_csv") -> dict[str, Any]:
     """
-    Build a categories payload compatible with `configs/categories.json` from CUAD's
-    `category_descriptions.csv`.
+    Build a categories payload compatible with `configs/categories.json`.
+    Supports both CUAD's `category_descriptions.csv` and a simple `id,name,description` CSV.
     """
     rows: list[dict[str, str]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as f:
@@ -49,20 +49,31 @@ def load_categories_from_csv(csv_path: Path, *, version: str = "cuad_v1_41_from_
 
     cats: list[dict[str, str]] = []
     used: set[str] = set()
+    headers = {h.lower() for h in (rows[0].keys() if rows else [])}
+    simple_schema = "id" in headers and "name" in headers
     for r in rows:
-        name_raw = r.get("Category (incl. context and answer)", "") or r.get("Category", "")
-        desc_raw = r.get("Description", "")
-        name = _clean_category_name(name_raw)
-        if not name:
-            continue
-        cid = _slug_id(name)
+        if simple_schema:
+            name = (r.get("name", "") or "").strip()
+            desc_raw = r.get("description", "")
+            cid = (r.get("id", "") or "").strip()
+            if not name and not cid:
+                continue
+            if not cid:
+                cid = _slug_id(name)
+        else:
+            name_raw = r.get("Category (incl. context and answer)", "") or r.get("Category", "")
+            desc_raw = r.get("Description", "")
+            name = _clean_category_name(name_raw)
+            if not name:
+                continue
+            cid = _slug_id(name)
         base = cid
         i = 2
         while cid in used:
             cid = f"{base}_{i}"
             i += 1
         used.add(cid)
-        cats.append({"id": cid, "name": name, "description": _clean_description(desc_raw)})
+        cats.append({"id": cid, "name": name or cid, "description": _clean_description(desc_raw)})
 
     if not cats:
         raise ValueError(
