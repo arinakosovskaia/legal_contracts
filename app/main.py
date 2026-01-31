@@ -32,7 +32,7 @@ from .models import (
     Stage1Category,
     UploadResponse,
 )
-from .parser import parse_pdf_to_paragraphs
+from .parser import parse_pdf_to_paragraphs, _split_into_paragraphs
 from .annotated_pdf import build_annotated_text_pdf
 from .storage import (
     Paths,
@@ -49,10 +49,10 @@ from .storage import (
 LOGGER = logging.getLogger("demo")
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
 
 def _auth_enabled() -> bool:
-    return os.environ.get("ENABLE_AUTH", "1") == "1"
+    return False
 
 
 def _env_int(name: str, default: int) -> int:
@@ -69,13 +69,14 @@ def get_limits() -> dict:
         "max_file_mb": _env_int("MAX_FILE_MB", 0),
         "ttl_hours": _env_int("TTL_HOURS", 24),
         "max_llm_concurrency": _env_int("MAX_LLM_CONCURRENCY", 8),
-        "max_findings_per_chunk": _env_int("MAX_FINDINGS_PER_CHUNK", 5),
     }
 
 
 def require_basic_auth(creds: HTTPBasicCredentials = Depends(security)) -> None:
     if not _auth_enabled():
         return
+    if creds is None:
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
     user = os.environ.get("BASIC_AUTH_USER", "")
     pwd = os.environ.get("BASIC_AUTH_PASS", "")
     ok = secrets.compare_digest(creds.username or "", user) and secrets.compare_digest(creds.password or "", pwd)
@@ -112,6 +113,23 @@ if STATIC_DIR.exists():
 # Keys are NOT persisted; this is for real-time UI visibility during a running job.
 _LIVE_TRACE: dict[str, dict] = {}
 _CANCELLED: set[str] = set()
+_JOB_TASKS: dict[str, set[asyncio.Task]] = {}
+
+
+def _register_job_task(job_id: str, task: asyncio.Task) -> None:
+    tasks = _JOB_TASKS.setdefault(job_id, set())
+    tasks.add(task)
+
+    def _cleanup(_t: asyncio.Task) -> None:
+        tasks.discard(_t)
+
+    task.add_done_callback(_cleanup)
+
+
+def _cancel_job_tasks(job_id: str) -> None:
+    for t in list(_JOB_TASKS.get(job_id, set())):
+        if not t.done():
+            t.cancel()
 
 
 def _set_live_trace(job_id: str, payload: dict) -> None:
@@ -126,7 +144,25 @@ def _is_cancelled(job_id: str) -> bool:
 
 
 def _is_heading_paragraph(text: str) -> bool:
-    return parse_heading(text, max_len=160) is not None
+    """
+    Only treat TOP-LEVEL headings as headings for section splitting/removal.
+    Subsection headers like "1.3" should stay in the content.
+    """
+    h = parse_heading(text, max_len=160)
+    if h is None:
+        return False
+    if h.level == 0:
+        return True
+    if h.level == 1:
+        label = (h.label or "").strip()
+        m = re.search(r"(?:Section|Clause|§)\s*(\d+(?:\.\d+)*)", label, re.IGNORECASE)
+        if m:
+            return "." not in m.group(1)
+        return True
+    if h.level == 2:
+        label = (h.label or "").strip()
+        return "." not in label
+    return False
 
 
 def _is_signature_paragraph(text: str) -> bool:
@@ -135,6 +171,9 @@ def _is_signature_paragraph(text: str) -> bool:
     Such paragraphs should be filtered out before LLM processing as they're not contract content.
     """
     if not text:
+        return False
+    # Never treat headings as signatures/garbage.
+    if parse_heading(text, max_len=160) is not None:
         return False
     t = text.strip()
     if len(t) < 3:
@@ -220,6 +259,12 @@ def _filter_garbage_paragraphs(paragraphs: list[Paragraph]) -> list[Paragraph]:
             i += 1
             continue
         
+        # Keep headings even if they look short or name-like.
+        if parse_heading(text, max_len=160) is not None:
+            filtered.append(p)
+            i += 1
+            continue
+
         # Check if it's a signature/date/name paragraph
         if _is_signature_paragraph(text):
             i += 1
@@ -234,6 +279,10 @@ def _filter_garbage_paragraphs(paragraphs: list[Paragraph]) -> list[Paragraph]:
             while j < len(paragraphs) and short_count < 5:  # Check up to 4 more paragraphs
                 next_text = (paragraphs[j].text or "").strip()
                 if not next_text:
+                    break
+                if parse_heading(next_text, max_len=160) is not None:
+                    # Heading within short lines means this isn't garbage sequence.
+                    short_count = 0
                     break
                 next_words = next_text.split()
                 if len(next_words) <= 2:
@@ -296,6 +345,12 @@ def _approx_tokens(text: str) -> int:
     if not s:
         return 0
     return max(1, int((len(s) + 3) / 4))
+
+
+def _normalize_for_match(text: str) -> str:
+    t = (text or "").lower().strip()
+    t = re.sub(r"\s+", " ", t)
+    return t
 
 
 def _find_trigger_edges(text: str, edge_frac: float) -> tuple[bool, bool]:
@@ -459,17 +514,73 @@ async def health(_: None = Depends(require_basic_auth)) -> JSONResponse:
     """Debug endpoint (no secrets) for demo setup."""
     provider = "nebius" if os.environ.get("NEBIUS_API_KEY") else "openai"
     base_url = os.environ.get("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/") if provider == "nebius" else None
+    if provider == "nebius":
+        stage1 = os.environ.get("NEBIUS_MODEL_STAGE1") or os.environ.get("OPENAI_MODEL_STAGE1", "Qwen/Qwen3-30B-A3B-Thinking-2507")
+        stage2 = (
+            os.environ.get("NEBIUS_MODEL_STAGE2")
+            or os.environ.get("NEBIUS_MODEL")
+            or os.environ.get("OPENAI_MODEL_STAGE2", "Qwen/Qwen3-30B-A3B-Thinking-2507")
+        )
+    else:
+        stage1 = os.environ.get("OPENAI_MODEL_STAGE1", "Qwen/Qwen3-30B-A3B-Thinking-2507")
+        stage2 = os.environ.get("OPENAI_MODEL_STAGE2", "Qwen/Qwen3-30B-A3B-Thinking-2507")
     return JSONResponse(
         content={
             "provider": provider,
             "base_url": base_url,
             "models": {
-                "stage_1": os.environ.get("OPENAI_MODEL_STAGE1", "Qwen/Qwen3-30B-A3B-Thinking-2507"),
-                "stage_2": os.environ.get("OPENAI_MODEL_STAGE2", "Qwen/Qwen3-30B-A3B-Thinking-2507"),
+                "stage_1": stage1,
+                "stage_2": stage2,
             },
             "limits": get_limits(),
         }
     )
+
+
+EXAMPLE_CONTRACT_PATH = (
+    DATA_DIR / "CUAD_v1" / "full_contract_pdf" / "Part_III" / "Distributor"
+    / "LIMEENERGYCO_09_09_1999-EX-10-DISTRIBUTOR AGREEMENT.PDF"
+)
+
+
+@app.post("/upload-example", response_model=UploadResponse)
+async def upload_example(
+    background: BackgroundTasks,
+    provider: str = Form("nebius"),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
+    model: str = Form(""),
+    mode: str = Form(""),
+    prompt_version: str = Form(""),
+    use_demo_key: str = Form("0"),
+    _: None = Depends(require_basic_auth),
+) -> UploadResponse:
+    """Create a job from the built-in example contract (LIMEENERGYCO) so all 4 expected quotes are analyzed."""
+    example_path = EXAMPLE_CONTRACT_PATH if EXAMPLE_CONTRACT_PATH.exists() else (BASE_DIR / "static" / "example_contract.pdf")
+    if not example_path.exists():
+        raise HTTPException(status_code=404, detail="Example contract not found. Run scripts/refresh_example_contract.sh or add static/example_contract.pdf")
+    limits = get_limits()
+    job_id = secrets.token_hex(12)
+    upload_path = job_upload_path(paths, job_id, example_path.name)
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    upload_path.write_bytes(example_path.read_bytes())
+    await create_job(paths.db, job_id, example_path.name, upload_path, debug_paragraph_enabled=False, debug_window_enabled=False)
+    use_demo = (use_demo_key or "").strip() in ("1", "true", "yes", "on")
+    final_api_key = (os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY") or "") if use_demo else (api_key or "").strip()
+    if not final_api_key:
+        raise HTTPException(status_code=400, detail="API key is required (or sign in as demo).")
+    if not (model or "").strip():
+        raise HTTPException(status_code=400, detail="Model is required.")
+    llm_overrides = {
+        "provider": (provider or "").strip().lower(),
+        "api_key": final_api_key,
+        "base_url": (base_url or "").strip(),
+        "model": (model or "").strip(),
+        "mode": (mode or "").strip().lower(),
+        "prompt_version": (prompt_version or "").strip().lower(),
+    }
+    background.add_task(process_job, job_id, llm_overrides)
+    return UploadResponse(job_id=job_id, status=JobStatus.queued, limits=limits)
 
 
 @app.post("/upload", response_model=UploadResponse)
@@ -482,6 +593,8 @@ async def upload(
     model: str = Form(""),
     enable_debug_paragraph: str = Form("0"),
     enable_debug_window: str = Form("0"),
+    mode: str = Form(""),
+    prompt_version: str = Form(""),
     use_demo_key: str = Form("0"),
     _: None = Depends(require_basic_auth),
 ) -> UploadResponse:
@@ -534,12 +647,81 @@ async def upload(
         final_api_key = os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     else:
         final_api_key = (api_key or "").strip()
+    if not final_api_key:
+        raise HTTPException(status_code=400, detail="API key is required (or sign in as demo).")
+    if not (model or "").strip():
+        raise HTTPException(status_code=400, detail="Model is required.")
     
     llm_overrides = {
         "provider": (provider or "").strip().lower(),
         "api_key": final_api_key,
         "base_url": (base_url or "").strip(),
         "model": (model or "").strip(),
+        "mode": (mode or "").strip().lower(),
+        "prompt_version": (prompt_version or "").strip().lower(),
+    }
+    background.add_task(process_job, job_id, llm_overrides)
+
+    return UploadResponse(job_id=job_id, status=JobStatus.queued, limits=limits)
+
+
+@app.post("/upload-text", response_model=UploadResponse)
+async def upload_text(
+    background: BackgroundTasks,
+    text: str = Form(...),
+    provider: str = Form("nebius"),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
+    model: str = Form(""),
+    enable_debug_paragraph: str = Form("0"),
+    enable_debug_window: str = Form("0"),
+    mode: str = Form(""),
+    prompt_version: str = Form(""),
+    use_demo_key: str = Form("0"),
+    _: None = Depends(require_basic_auth),
+) -> UploadResponse:
+    """Create a job from plain text input."""
+    limits = get_limits()
+    
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    
+    # Create a temporary text file (we'll parse it as text, not PDF)
+    job_id = secrets.token_hex(12)
+    upload_path = job_upload_path(paths, job_id, "text_input.txt")
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    upload_path.write_text(text, encoding="utf-8")
+    
+    # For text input, we'll parse it directly in process_job
+    # Mark it as text input by using .txt extension
+    dbg_para = (enable_debug_paragraph or "").strip() in ("1", "true", "yes", "on")
+    dbg_win = (enable_debug_window or "").strip() in ("1", "true", "yes", "on")
+    await create_job(
+        paths.db,
+        job_id,
+        "text_input.txt",
+        upload_path,
+        debug_paragraph_enabled=dbg_para,
+        debug_window_enabled=dbg_win,
+    )
+    use_demo = (use_demo_key or "").strip() in ("1", "true", "yes", "on")
+    final_api_key = ""
+    if use_demo:
+        final_api_key = os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    else:
+        final_api_key = (api_key or "").strip()
+    if not final_api_key:
+        raise HTTPException(status_code=400, detail="API key is required (or sign in as demo).")
+    if not (model or "").strip():
+        raise HTTPException(status_code=400, detail="Model is required.")
+    
+    llm_overrides = {
+        "provider": (provider or "").strip().lower(),
+        "api_key": final_api_key,
+        "base_url": (base_url or "").strip(),
+        "model": (model or "").strip(),
+        "mode": (mode or "").strip().lower(),
+        "prompt_version": (prompt_version or "").strip().lower(),
     }
     background.add_task(process_job, job_id, llm_overrides)
 
@@ -575,6 +757,7 @@ async def cancel_job(job_id: str, _: None = Depends(require_basic_auth)) -> JSON
         return JSONResponse(content={"ok": True, "status": status})
 
     _CANCELLED.add(job_id)
+    _cancel_job_tasks(job_id)
     # Show immediate feedback in UI.
     await update_job(paths.db, job_id, stage="cancelling", error="CANCEL_REQUESTED")
     return JSONResponse(content={"ok": True, "status": "cancelling"})
@@ -615,12 +798,16 @@ async def job_pdf(job_id: str, _: None = Depends(require_basic_auth)) -> FileRes
     row = await get_job(paths.db, job_id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
-    upload_path = row.get("upload_path")
-    if not upload_path or not Path(upload_path).exists():
-        raise HTTPException(status_code=404, detail="PDF not found")
+    upload_path_s = row.get("upload_path")
+    if not upload_path_s:
+        raise HTTPException(status_code=404, detail="Document not found")
+    upload_path = Path(upload_path_s)
+    if not upload_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    if upload_path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="PDF is not available for this job (text input was used)")
     filename = row.get("filename") or "document.pdf"
-    return FileResponse(path=upload_path, media_type="application/pdf", filename=filename)
-
+    return FileResponse(path=str(upload_path), media_type="application/pdf", filename=filename)
 
 @app.get("/job/{job_id}/annotated", response_class=HTMLResponse)
 async def job_annotated(job_id: str, _: None = Depends(require_basic_auth)) -> HTMLResponse:
@@ -632,29 +819,56 @@ async def job_annotated_data(job_id: str, _: None = Depends(require_basic_auth))
     row = await get_job(paths.db, job_id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
-    upload_path = row.get("upload_path")
-    result_path = row.get("result_path")
-    if not upload_path or not Path(upload_path).exists():
-        raise HTTPException(status_code=404, detail="PDF not found")
-    if not result_path or not Path(result_path).exists():
+    upload_path_s = row.get("upload_path")
+    result_path_s = row.get("result_path")
+    if not upload_path_s or not Path(upload_path_s).exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not result_path_s or not Path(result_path_s).exists():
         raise HTTPException(status_code=404, detail="Result not found")
 
-    result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    upload_path = Path(upload_path_s)
+    result = json.loads(Path(result_path_s).read_text(encoding="utf-8"))
     findings = result.get("findings", [])
-    # Log filtering for debugging
+
+    # Filter out items explicitly marked as fair (is_unfair=False) and dedupe.
     total_findings = len(findings)
     unfair_findings = [f for f in findings if f.get("is_unfair") is not False]
     filtered_count = total_findings - len(unfair_findings)
     if filtered_count > 0:
-        LOGGER.info(f"Filtered {filtered_count} findings with is_unfair=False (out of {total_findings} total)")
+        LOGGER.info(
+            "Filtered %s findings with is_unfair=False (out of %s total)",
+            filtered_count,
+            total_findings,
+        )
     unfair_findings = dedupe_findings([Finding(**f) for f in unfair_findings])
     unfair_findings_dict = [f.model_dump() for f in unfair_findings]
+
     limits = get_limits()
-    paragraphs, page_count = parse_pdf_to_paragraphs(
-        Path(upload_path),
-        max_pages=limits["max_pages"],
-        max_paragraphs=limits["max_paragraphs"],
-    )
+    if upload_path.suffix.lower() == ".txt":
+        text_content = upload_path.read_text(encoding="utf-8")
+        para_infos = _split_into_paragraphs(text_content)
+        paragraphs = [
+            Paragraph(
+                text=pi.text,
+                page=1,
+                paragraph_index=i,
+                bbox=None,
+            )
+            for i, pi in enumerate(para_infos)
+        ]
+        page_count = 1
+        if limits["max_paragraphs"] > 0 and len(paragraphs) > limits["max_paragraphs"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Text produced > {limits['max_paragraphs']} paragraphs, exceeds MAX_PARAGRAPHS={limits['max_paragraphs']}.",
+            )
+    else:
+        paragraphs, page_count = parse_pdf_to_paragraphs(
+            upload_path,
+            max_pages=limits["max_pages"],
+            max_paragraphs=limits["max_paragraphs"],
+        )
+
     paragraphs = _normalize_paragraphs(paragraphs)
     payload = {
         "page_count": page_count,
@@ -666,36 +880,50 @@ async def job_annotated_data(job_id: str, _: None = Depends(require_basic_auth))
     }
     return JSONResponse(content=payload)
 
-
 @app.get("/job/{job_id}/annotated.pdf")
 async def job_annotated_pdf(job_id: str, _: None = Depends(require_basic_auth)) -> FileResponse:
     row = await get_job(paths.db, job_id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
-    upload_path = row.get("upload_path")
-    result_path = row.get("result_path")
-    if not upload_path or not Path(upload_path).exists():
-        raise HTTPException(status_code=404, detail="PDF not found")
-    if not result_path or not Path(result_path).exists():
+    upload_path_s = row.get("upload_path")
+    result_path_s = row.get("result_path")
+    if not upload_path_s or not Path(upload_path_s).exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not result_path_s or not Path(result_path_s).exists():
         raise HTTPException(status_code=404, detail="Result not found")
 
+    upload_path = Path(upload_path_s)
     out_path = paths.results / f"{job_id}_annotated.pdf"
+
     try:
-        result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+        result = json.loads(Path(result_path_s).read_text(encoding="utf-8"))
         findings = result.get("findings", [])
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read result: {exc}")
 
     limits = get_limits()
-    paragraphs, _page_count = parse_pdf_to_paragraphs(
-        Path(upload_path),
-        max_pages=limits["max_pages"],
-        max_paragraphs=limits["max_paragraphs"],
-    )
+    if upload_path.suffix.lower() == ".txt":
+        text_content = upload_path.read_text(encoding="utf-8")
+        para_infos = _split_into_paragraphs(text_content)
+        paragraphs = [
+            Paragraph(
+                text=pi.text,
+                page=1,
+                paragraph_index=i,
+                bbox=None,
+            )
+            for i, pi in enumerate(para_infos)
+        ]
+    else:
+        paragraphs, _page_count = parse_pdf_to_paragraphs(
+            upload_path,
+            max_pages=limits["max_pages"],
+            max_paragraphs=limits["max_paragraphs"],
+        )
+
     paragraphs = _normalize_paragraphs(paragraphs)
     build_annotated_text_pdf(paragraphs=paragraphs, findings=findings, out_path=out_path)
-    return FileResponse(path=out_path, media_type="application/pdf", filename=f"annotated_{job_id}.pdf")
-
+    return FileResponse(path=str(out_path), media_type="application/pdf", filename=f"annotated_{job_id}.pdf")
 
 async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None:
     limits = get_limits()
@@ -707,15 +935,35 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
     enable_debug_window = False
     try:
         LOGGER.info("Job %s started: %s", job_id, upload_path.name)
+        _JOB_TASKS.setdefault(job_id, set())
         if _is_cancelled(job_id):
             await update_job(paths.db, job_id, status=JobStatus.cancelled, stage="cancelled", progress=100, error="CANCELLED")
             return
         await update_job(paths.db, job_id, status=JobStatus.running, stage="parse", progress=0, started_at=datetime.now(timezone.utc))
-        paragraphs, page_count = parse_pdf_to_paragraphs(
-            upload_path,
-            max_pages=limits["max_pages"],
-            max_paragraphs=limits["max_paragraphs"],
-        )
+        
+        # Check if it's a text file or PDF
+        if upload_path.suffix.lower() == ".txt":
+            # Parse text file directly
+            text_content = upload_path.read_text(encoding="utf-8")
+            para_infos = _split_into_paragraphs(text_content)
+            paragraphs = []
+            for idx, para_info in enumerate(para_infos):
+                paragraphs.append(Paragraph(
+                    text=para_info.text,
+                    page=1,  # Text files are treated as single page
+                    paragraph_index=idx,
+                    bbox=None
+                ))
+            page_count = 1
+            if limits["max_paragraphs"] > 0 and len(paragraphs) > limits["max_paragraphs"]:
+                raise ValueError(f"Text produced > {limits['max_paragraphs']} paragraphs, exceeds MAX_PARAGRAPHS={limits['max_paragraphs']}.")
+        else:
+            # Parse PDF file
+            paragraphs, page_count = parse_pdf_to_paragraphs(
+                upload_path,
+                max_pages=limits["max_pages"],
+                max_paragraphs=limits["max_paragraphs"],
+            )
         paragraphs = _normalize_paragraphs(paragraphs)
         LOGGER.info("Job %s parsed: pages=%s paragraphs=%s", job_id, page_count, len(paragraphs))
         await update_job(
@@ -748,12 +996,28 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
 
         if not api_key:
             raise RuntimeError("API key required. Provide it in the UI (preferred) or set NEBIUS_API_KEY / OPENAI_API_KEY.")
+        mode = (overrides.get("mode") or os.environ.get("CLASSIFIER_MODE", "uk_two_stage")).strip().lower()
+        prompt_version = (overrides.get("prompt_version") or os.environ.get("REDFLAG_PROMPT_VERSION", "v1")).strip().lower()
+        if mode:
+            if mode in ("uk_two_stage", "uk"):
+                use_uk_redflags = True
+                single_classifier = True
+            elif mode in ("single_legacy", "legacy", "v1", "old"):
+                use_uk_redflags = False
+                single_classifier = True
+            else:
+                use_uk_redflags = False
+                single_classifier = os.environ.get("SINGLE_CLASSIFIER", "1") == "1"
+        else:
+            use_uk_redflags = prompt_version in ("uk", "uk_v2", "v2_uk", "uk2")
+            single_classifier = os.environ.get("SINGLE_CLASSIFIER", "1") == "1"
+        categories_csv = DATA_DIR / ("category_definitions_new.csv" if use_uk_redflags else "category_descriptions.csv")
+        categories_version = "uk_tenancy_v1" if use_uk_redflags else "cuad_v1_41_from_csv"
         cats_payload = load_categories_payload(
-            csv_path=DATA_DIR / "category_descriptions.csv",
+            csv_path=categories_csv,
             json_path=CONFIGS_DIR / "categories.json",
+            version=categories_version,
         )
-
-        single_classifier = os.environ.get("SINGLE_CLASSIFIER", "1") == "1"
         fewshot_enabled = os.environ.get("ENABLE_FEWSHOT", "0") == "1"
         fewshot_k = int(os.environ.get("FEWSHOT_MAX_PER_CATEGORY", "2"))
         fewshot_window = int(os.environ.get("FEWSHOT_CONTEXT_WINDOW", "240"))
@@ -771,33 +1035,62 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             if single_classifier
             else None
         )
-        fewshot = load_or_build_fewshot(
-            data_dir=DATA_DIR,
-            categories_payload=cats_payload,
-            enabled=fewshot_enabled,
-            max_examples_per_category=fewshot_k,
-            context_window=fewshot_window,
-            out_dir=fewshot_dir,
-            only_category_ids=only_fewshot_category_ids,
-        )
+        uk_fewshot_text = ""
+        if use_uk_redflags and single_classifier:
+            uk_fewshot_path = Path(os.environ.get("UK_FEWSHOT_PATH", str(DATA_DIR / "fewshot_uk_redflags.txt")))
+            if uk_fewshot_path.exists():
+                uk_fewshot_text = uk_fewshot_path.read_text(encoding="utf-8").strip()
+            fewshot_enabled = bool(uk_fewshot_text)
+            fewshot = {}
+        else:
+            fewshot = load_or_build_fewshot(
+                data_dir=DATA_DIR,
+                categories_payload=cats_payload,
+                enabled=fewshot_enabled,
+                max_examples_per_category=fewshot_k,
+                context_window=fewshot_window,
+                out_dir=fewshot_dir,
+                only_category_ids=only_fewshot_category_ids,
+            )
         cuad_path = resolve_cuad_json_path(DATA_DIR)
         cuad_meta = cuad_file_meta(cuad_path) if cuad_path.exists() else {"path": str(cuad_path)}
 
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.0"))
-        LOGGER.info("Job %s LLM config: temperature=%.1f, max_findings_per_chunk=%d", job_id, temperature, limits.get("max_findings_per_chunk", 5))
+        seed_env = os.environ.get("LLM_SEED", "").strip()
+        seed = int(seed_env) if seed_env else 1
+        LOGGER.info(
+            "Job %s LLM config: temperature=%.1f, seed=%s",
+            job_id, temperature, seed if seed is not None else "none",
+        )
+        if provider == "openai":
+            default_stage1 = os.environ.get("OPENAI_MODEL_STAGE1", "gpt-5-nano")
+            default_stage2 = os.environ.get("OPENAI_MODEL_STAGE2", "gpt-5-mini")
+        else:
+            default_stage1 = os.environ.get("NEBIUS_MODEL_STAGE1") or os.environ.get("OPENAI_MODEL_STAGE1", "gpt-5-nano")
+            default_stage2 = (
+                os.environ.get("NEBIUS_MODEL_STAGE2")
+                or os.environ.get("NEBIUS_MODEL")
+                or os.environ.get("OPENAI_MODEL_STAGE2", "gpt-5-mini")
+            )
+        resolved_stage2 = chosen_model or default_stage2
+        if use_uk_redflags:
+            # Use the same model for both steps to avoid provider/model mismatches.
+            default_stage1 = resolved_stage2
         llm = LLMRunner(
             LLMConfig(
                 api_key=api_key,
                 base_url=base_url,
-                model_stage1=os.environ.get("OPENAI_MODEL_STAGE1", "gpt-5-nano"),
-                model_stage2=chosen_model or os.environ.get("OPENAI_MODEL_STAGE2", "gpt-5-mini"),
+                model_stage1=default_stage1,
+                model_stage2=resolved_stage2,
                 max_concurrency=limits["max_llm_concurrency"],
                 stage1_include_descriptions=os.environ.get("STAGE1_INCLUDE_DESCRIPTIONS", "0") == "1",
                 message_content_mode=message_mode,
                 temperature=temperature,
+                seed=seed,
             ),
             cats_payload,
             fewshot_by_category=fewshot,
+            uk_fewshot_text=uk_fewshot_text,
         )
 
         enable_debug_paragraph = bool(int(row.get("debug_paragraph_enabled") or 0))
@@ -860,6 +1153,25 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         filtered_paragraphs = _filter_garbage_paragraphs(paragraphs)
         sections: list[list[Paragraph]] = []
         cur: list[Paragraph] = []
+
+        def _is_top_level_section_heading(h: Optional[Heading]) -> bool:
+            if h is None:
+                return False
+            # Article-level headings are always top-level.
+            if h.level == 0:
+                return True
+            # Section/Clause/§ headings: only split if the number has no dot.
+            if h.level == 1:
+                label = (h.label or "").strip()
+                m = re.search(r"(?:Section|Clause|§)\s*(\d+(?:\.\d+)*)", label, re.IGNORECASE)
+                if m:
+                    return "." not in m.group(1)
+                return True
+            # Pure numeric headings like "1." or "2" are level 2 in our parser.
+            if h.level == 2:
+                label = (h.label or "").strip()
+                return "." not in label
+            return False
         
         # Pattern to detect headings that start a paragraph but have body text after (e.g., "5.8. Title. Body...")
         heading_with_body_pattern = re.compile(
@@ -868,12 +1180,12 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         )
         
         for p in filtered_paragraphs:
-            # Check if paragraph is a heading (entire paragraph)
-            is_heading = _is_heading_paragraph(p.text)
+            para_text = (p.text or "").strip()
+            heading = parse_heading(para_text, max_len=160)
+            is_section_heading = _is_top_level_section_heading(heading)
             
             # Also check if paragraph starts with a heading pattern (heading + body in same para)
-            # This catches cases like "5.8. Nonpublic Information. The Distributor..."
-            para_text = (p.text or "").strip()
+            # Only split on top-level section numbers (e.g., "1. Title. Body"), not subsections (e.g., "1.1").
             m = heading_with_body_pattern.match(para_text)
             starts_with_heading = False
             if m:
@@ -890,9 +1202,11 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                     is_short_heading = len(words) <= 5
                     is_uppercase_heading = uppercase_ratio >= 0.5
                     is_title_case_short = (2 <= len(words) <= 4 and titlecase_ratio >= 0.5)
-                    starts_with_heading = (is_uppercase_heading or is_short_heading or is_title_case_short)
+                    is_heading_like = (is_uppercase_heading or is_short_heading or is_title_case_short)
+                    # Only split on top-level section numbers (e.g., "1. Title. Body"), not subsections (e.g., "1.1").
+                    starts_with_heading = is_heading_like and num_part.count(".") == 0
             
-            if (is_heading or starts_with_heading) and cur:
+            if (is_section_heading or starts_with_heading) and cur:
                 sections.append(cur)
                 cur = [p]
             else:
@@ -980,17 +1294,22 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         window_tokens = int(os.environ.get("STAGE1_WINDOW_TOKENS", "1100"))
         stride_tokens = int(os.environ.get("STAGE1_STRIDE_TOKENS", "300"))
         edge_frac = float(os.environ.get("STAGE1_TRIGGER_EDGE_FRAC", "0.15"))
+        llm_max_retries = int(os.environ.get("LLM_MAX_RETRIES", "3"))
+        llm_retry_sleep = float(os.environ.get("LLM_RETRY_SLEEP", "0.8"))
+        quote_repair_enabled = os.environ.get("LLM_QUOTE_REPAIR", "1") == "1"
 
         def approx_size(ps: list[Paragraph]) -> int:
             return sum(len((p.text or "")) + 40 for p in ps)
 
         window_traces: list[dict] = []
+        failed_windows: list[dict] = []
 
         if single_classifier:
             # Single-classifier mode: each window is classified directly into up to 2 red-flag findings.
             await update_job(paths.db, job_id, stage="processing", progress=55)
 
             findings: list[Finding] = []
+            window_findings: list[tuple[str, int, Finding]] = []
 
             severity_by_category = {
                 "Termination For Convenience": "medium",
@@ -1012,7 +1331,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                     return "Evaluate MFN obligations; consider narrowing scope and defining comparators."
                 if cat == "Audit Rights":
                     return "Check audit scope, frequency, confidentiality, and cost allocation."
-                return "Review IP assignment scope and consider carve-outs/limitations."
+                return "Review the clause for compliance and propose a tenant-fair revision."
 
             async def classify_window(
                 sec_body: list[Paragraph], start_i: int, end_i: int, *, window_id: str,
@@ -1103,23 +1422,60 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             "text_chunk": text_chunk[:6000],
                         },
                     )
-                max_findings = limits.get("max_findings_per_chunk", 5)
-                out, raw, prompt = await llm.classify_redflags_for_chunk(
-                    text_chunk=text_chunk,
-                    section_path=spath,
-                    max_findings=max_findings,
-                    return_prompt=enable_debug_window,
-                )
+                out = None
+                raw = ""
+                prompt = None
+                repair_logs: list[dict] = []
+                final_findings: list[dict] = []
+                for attempt in range(llm_max_retries):
+                    try:
+                        if use_uk_redflags:
+                            out, raw, prompt = await llm.classify_redflags_for_chunk_v2(
+                                text_chunk=text_chunk,
+                                section_path=spath,
+                                return_prompt=enable_debug_window,
+                            )
+                        else:
+                            out, raw, prompt = await llm.classify_redflags_for_chunk(
+                                text_chunk=text_chunk,
+                                section_path=spath,
+                                return_prompt=enable_debug_window,
+                            )
+                        break
+                    except Exception as exc:
+                        if _is_cancelled(job_id):
+                            return
+                        if attempt < llm_max_retries - 1:
+                            LOGGER.warning(
+                                "Window %s: LLM call failed (%s/%s), retrying: %s",
+                                window_id,
+                                attempt + 1,
+                                llm_max_retries,
+                                str(exc)[:2000],
+                            )
+                            await asyncio.sleep(llm_retry_sleep * (attempt + 1))
+                            continue
+                        if enable_debug_window:
+                            failed_windows.append(
+                                {
+                                    "window_id": window_id,
+                                    "section_path": spath,
+                                    "paragraph_indices": [p.paragraph_index for p in chunk_paras],
+                                    "error": str(exc)[:2000],
+                                }
+                            )
+                        raise
                 if _is_cancelled(job_id):
                     return
 
+                chunk_for_llm = text_chunk
                 if enable_debug_window:
                     prompt_user = (prompt or {}).get("user", "")
                     prompt_system = (prompt or {}).get("system", "")
                     sections = (prompt or {}).get("sections") if isinstance(prompt, dict) else None
+                    router_info = (prompt or {}).get("router") if isinstance(prompt, dict) else None
                     # Fall back to extracting minimal parts if sections are not present.
                     ctx = ""
-                    chunk_for_llm = ""
                     fewshot = ""
                     defs = ""
                     if isinstance(sections, dict):
@@ -1148,7 +1504,10 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                 "fewshot": fewshot[:8000],
                                 "category_definitions": defs[:4000],
                             },
+                            "router": router_info,
                             "raw_output": (raw or "")[:8000],
+                            "final_findings": final_findings,
+                            "quote_repairs": repair_logs,
                             "parsed": out.model_dump(),
                         }
                     )
@@ -1170,7 +1529,10 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             "category_definitions": defs[:4000],
                             "fewshot": fewshot[:8000],
                             "text_chunk": chunk_for_llm[:8000] or text_chunk[:8000],
+                            "router": router_info,
                             "raw_output": (raw or "")[:6000],
+                            "final_findings": final_findings,
+                            "quote_repairs": repair_logs,
                             "parsed": out.model_dump(),
                         },
                     )
@@ -1183,7 +1545,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 if not out.findings:
                     LOGGER.warning(
                         f"Window {window_id}: LLM returned EMPTY findings! "
-                        f"Temperature={llm.cfg.temperature}, max_findings={max_findings}, "
+                        f"Temperature={llm.cfg.temperature}, "
                         f"chunk_length={len(chunk_for_llm)}, section_path={spath}"
                     )
                     if raw:
@@ -1198,21 +1560,22 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             f"is_unfair={f.is_unfair}"
                         )
                 
-                if len(out.findings) > max_findings:
-                    LOGGER.warning(
-                        f"Window {window_id}: LLM returned {len(out.findings)} findings, but max_findings={max_findings}. "
-                        f"Truncating to {max_findings} findings."
-                    )
-                
-                # Process findings (limit to max_findings)
-                findings_to_process = out.findings[:max_findings]
+                # Process all findings (no limit)
+                findings_to_process = out.findings
                 LOGGER.info(
-                    f"Window {window_id}: Processing {len(findings_to_process)} findings "
-                    f"(out of {len(out.findings)} returned by LLM, max_findings={max_findings})"
+                    f"Window {window_id}: Processing {len(findings_to_process)} findings"
                 )
                 
                 for j, f in enumerate(findings_to_process):
-                    sev = severity_by_category.get(f.category, "medium")
+                    sev = severity_by_category.get(f.category)
+                    if not sev:
+                        sev_score = int(getattr(f.risk_assessment, "severity_of_consequences", 1) or 1)
+                        if sev_score >= 2:
+                            sev = "high"
+                        elif sev_score == 1:
+                            sev = "medium"
+                        else:
+                            sev = "low"
                     loc_para = None
                     evidence_quote = f.quote or ""
                     if not f.quote:
@@ -1343,7 +1706,8 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                     loc_para = chunk_paras[0]
                                     evidence_quote = (loc_para.text or "").strip() or f.quote
 
-                    cat_id = llm.redflag_category_id_by_name.get(f.category, "").strip() or f.category.lower().replace(" ", "_")
+                    cat_id = llm.resolve_category_id(f.category)
+                    cat_name = llm.category_name_by_id.get(cat_id, f.category)
                     reasoning_bullets = "\n".join(f"- {b}" for b in f.reasoning)
                     what = reasoning_bullets or f.explanation
                     revision_expl = (f.recommended_revision.revision_explanation or "").strip()
@@ -1361,38 +1725,80 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             LOGGER.error(
                                 f"Window {window_id}, finding {j+1} ({f.category}): No paragraphs in chunk, cannot assign location."
                             )
-                            findings.append(
-                                Finding(
-                                    finding_id=f"{window_id}_f{j+1}",
-                                    category_id=cat_id,
-                                    category_name=f.category,
-                                    severity=sev,  # type: ignore[arg-type]
-                                    confidence=0.8,
-                                    issue_title=f.category,
-                                    what_is_wrong=what,
-                                    explanation=f.explanation,
-                                    recommendation=revision_expl or recommend_for(f.category),
-                                    evidence_quote=evidence_quote,
-                                    is_unfair=bool(f.is_unfair),
-                                    legal_references=list(f.legal_references or [])[:6],
-                                    possible_consequences=f.possible_consequences,
-                                    risk_assessment=f.risk_assessment,
-                                    consequences_category=f.consequences_category,
-                                    risk_category=f.risk_category,
-                                    revised_clause=revised_clause,
-                                    revision_explanation=revision_expl,
-                                    suggested_follow_up=f.suggested_follow_up,
-                                    paragraph_bbox=None,
-                                    location={"page": 0, "paragraph_index": 0},
-                                )
+                            new_finding = Finding(
+                                finding_id=f"{window_id}_f{j+1}",
+                                category_id=cat_id,
+                                category_name=cat_name,
+                                severity=sev,  # type: ignore[arg-type]
+                                confidence=0.8,
+                                issue_title=f.category,
+                                what_is_wrong=what,
+                                explanation=f.explanation,
+                                recommendation=revision_expl or recommend_for(f.category),
+                                evidence_quote=evidence_quote,
+                                is_unfair=bool(f.is_unfair),
+                                legal_references=list(f.legal_references or [])[:6],
+                                possible_consequences=f.possible_consequences,
+                                risk_assessment=f.risk_assessment,
+                                consequences_category=f.consequences_category,
+                                risk_category=f.risk_category,
+                                revised_clause=revised_clause,
+                                revision_explanation=revision_expl,
+                                suggested_follow_up=f.suggested_follow_up,
+                                paragraph_bbox=None,
+                                location={"page": 0, "paragraph_index": 0},
                             )
+                            window_findings.append((window_id, 0, new_finding))
                             continue
                     
                     # Add finding with location
+                    if loc_para and evidence_quote:
+                        para_text = loc_para.text or ""
+                        if _normalize_for_match(evidence_quote) not in _normalize_for_match(para_text):
+                            if quote_repair_enabled:
+                                try:
+                                    repaired = await llm.repair_quote_from_paragraph(
+                                        paragraph_text=para_text, target_quote=evidence_quote
+                                    )
+                                    if repaired:
+                                        repair_logs.append(
+                                            {
+                                                "finding_index": j + 1,
+                                                "category": f.category,
+                                                "original_quote": evidence_quote,
+                                                "repaired_quote": repaired,
+                                                "matched": True,
+                                            }
+                                        )
+                                        evidence_quote = repaired
+                                    else:
+                                        repair_logs.append(
+                                            {
+                                                "finding_index": j + 1,
+                                                "category": f.category,
+                                                "original_quote": evidence_quote,
+                                                "repaired_quote": "",
+                                                "matched": False,
+                                            }
+                                        )
+                                except Exception as exc:
+                                    repair_logs.append(
+                                        {
+                                            "finding_index": j + 1,
+                                            "category": f.category,
+                                            "original_quote": evidence_quote,
+                                            "repaired_quote": "",
+                                            "matched": False,
+                                            "error": str(exc)[:200],
+                                        }
+                                    )
+                                    LOGGER.warning(
+                                        "Quote repair failed for window %s: %s", window_id, str(exc)[:200]
+                                    )
                     new_finding = Finding(
                         finding_id=f"{window_id}_f{j+1}",
-                        category_id=cat_id,
-                        category_name=f.category,
+                                category_id=cat_id,
+                                category_name=cat_name,
                         severity=sev,  # type: ignore[arg-type]
                         confidence=0.8,
                         issue_title=f.category,
@@ -1412,233 +1818,24 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         paragraph_bbox=loc_para.bbox,
                         location={"page": int(loc_para.page), "paragraph_index": int(loc_para.paragraph_index)},
                     )
-                    findings.append(new_finding)
+                    para_idx = int(loc_para.paragraph_index) if loc_para else 0
+                    window_findings.append((window_id, para_idx, new_finding))
+                    final_findings.append(
+                        {
+                            "finding_index": j + 1,
+                            "category": new_finding.category_name,
+                            "evidence_quote": new_finding.evidence_quote,
+                        }
+                    )
                     LOGGER.info(
                         f"Window {window_id}, finding {j+1} ({f.category}): "
-                        f"Added finding to list. Total findings so far: {len(findings)}. "
+                        f"Added finding to list. Total findings so far: {len(window_findings)}. "
                         f"Quote preview: {evidence_quote[:80] if evidence_quote else 'EMPTY'}..."
                     )
 
             window_tasks: list[asyncio.Task] = []
             for si, sec in enumerate(sections):
-                # Check cancellation before processing each section
-                if _is_cancelled(job_id):
-                    # Cancel all existing tasks
-                    for t in window_tasks:
-                        if not t.done():
-                            t.cancel()
-                    await update_job(paths.db, job_id, status=JobStatus.cancelled, stage="cancelled", progress=100, error="CANCELLED")
-                    if enable_debug_window:
-                        _clear_live_trace(job_id)
-                    return
-                
-                sec_body = [p for p in sec if not _is_heading_paragraph(p.text)]
-                if not sec_body:
-                    continue
-                sec_heading = section_heading_by_i.get(si)
-                sec_path = section_path_by_i.get(si, "")
-
-                starts: list[int] = [0]
-                while True:
-                    prev = starts[-1]
-                    need = stride_tokens
-                    i = prev
-                    while i < len(sec_body) and need > 0:
-                        need -= _approx_tokens(sec_body[i].text)
-                        i += 1
-                    if i >= len(sec_body):
-                        break
-                    starts.append(i)
-
-                for s in starts:
-                    t = 0
-                    e = s
-                    while e < len(sec_body) and t < window_tokens:
-                        t += _approx_tokens(sec_body[e].text)
-                        e += 1
-                    if e <= s:
-                        e = min(len(sec_body), s + 1)
-                    main_block = sec_body[s:e]
-
-                    joined = "\n\n".join(p.text for p in main_block)
-                    near_start, near_end = _find_trigger_edges(joined, edge_frac)
-                    exp_s, exp_e = _extend_window_by_stride(
-                        sec_body, s, e, stride_tokens=stride_tokens, extend_left=near_start, extend_right=near_end
-                    )
-                    # CRITICAL: Ensure expansion stays within sec_body boundaries (one section only)
-                    # sec_body already contains only paragraphs from the current section (heading removed)
-                    # So we just need to clamp exp_s and exp_e to [0, len(sec_body)]
-                    exp_s = max(0, min(exp_s, len(sec_body)))
-                    exp_e = max(exp_s, min(exp_e, len(sec_body)))
-                    
-                    # CRITICAL: Before creating expanded, check for headings from different sections
-                    # This prevents mixing paragraphs from different sections (e.g., 5.6 and 5.8)
-                    # Get current section number for comparison
-                    current_section_heading = section_heading_by_i.get(si)
-                    current_num = None
-                    if current_section_heading:
-                        current_heading = parse_heading(current_section_heading.text or "", max_len=160)
-                        if current_heading:
-                            label = current_heading.label
-                            num_match = re.search(r"(\d+(?:\.\d+)*)", label)
-                            if num_match:
-                                current_num = num_match.group(1)
-                    
-                    # Check paragraphs in exp_s:exp_e range for headings from different sections
-                    # Pattern 1: "5.8. Title. Body..." - heading with period, then body starts with capital
-                    heading_start_pattern1 = re.compile(
-                        r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Za-z\s]{2,}?)\s*\.\s+[A-Z]",
-                        re.IGNORECASE
-                    )
-                    # Pattern 2: "6. INTERPRETATION... 6.1 Assignment..." - heading, then subsection number
-                    heading_start_pattern2 = re.compile(
-                        r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Z\s]{5,}?)\s+(\d+\.\d+)",
-                        re.IGNORECASE
-                    )
-                    
-                    # Find the first paragraph that looks like a heading from a different section
-                    # Also stop at address/contact info blocks that typically appear before new sections
-                    trimmed_exp_e = exp_e
-                    for i in range(exp_s, exp_e):
-                        p = sec_body[i]
-                        para_text = (p.text or "").strip()
-                        
-                        # Check if it's address/contact info - these often appear before new sections
-                        # and shouldn't be in the current section's window
-                        if _is_signature_paragraph(para_text):
-                            # This looks like address/contact info - stop here to avoid mixing sections
-                            trimmed_exp_e = i
-                            LOGGER.warning(
-                                f"Window {window_id}: Found address/contact info at paragraph {p.paragraph_index} "
-                                f"(text: {para_text[:60]}...), trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                            )
-                            break
-                        
-                        # Check if entire paragraph is a heading
-                        if _is_heading_paragraph(para_text):
-                            # This is a heading - stop here
-                            trimmed_exp_e = i
-                            LOGGER.warning(
-                                f"Window {window_id}: Found heading at paragraph {p.paragraph_index}, trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                            )
-                            break
-                        
-                        # Check if paragraph starts with heading pattern
-                        m = heading_start_pattern1.match(para_text) or heading_start_pattern2.match(para_text)
-                        if m:
-                            num_part = m.group(1)
-                            title_part = m.group(2).strip()
-                            if title_part.endswith('.'):
-                                title_part = title_part[:-1].strip()
-                            
-                            # Check if title looks like a heading
-                            words = title_part.split()[:10]
-                            if words:
-                                uppercase_words = sum(1 for w in words if w.isupper() and len(w) > 1)
-                                titlecase_words = sum(1 for w in words if w and w[0].isupper() and not w.isupper())
-                                uppercase_ratio = uppercase_words / len(words) if words else 0
-                                titlecase_ratio = titlecase_words / len(words) if words else 0
-                                is_short_heading = len(words) <= 5
-                                is_uppercase_heading = uppercase_ratio >= 0.5
-                                is_title_case_short = (2 <= len(words) <= 4 and titlecase_ratio >= 0.5)
-                                
-                                if is_uppercase_heading or is_short_heading or is_title_case_short:
-                                    # Compare section numbers
-                                    if current_num:
-                                        if num_part != current_num:
-                                            is_subsection = num_part.startswith(current_num + ".")
-                                            is_parent_section = current_num.startswith(num_part + ".")
-                                            if not is_subsection and not is_parent_section:
-                                                # Different section - stop here (don't include this paragraph)
-                                                trimmed_exp_e = i
-                                                LOGGER.warning(
-                                                    f"Window {window_id}: Found different section '{num_part}' (current: '{current_num}') "
-                                                    f"at paragraph {p.paragraph_index} (text: {para_text[:60]}...), "
-                                                    f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                                )
-                                                break
-                                    else:
-                                        # No current section number, but found a heading - stop to be safe
-                                        trimmed_exp_e = i
-                                        LOGGER.warning(
-                                            f"Window {window_id}: Found heading '{num_part}' but current section has no number, "
-                                            f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                        )
-                                        break
-                    
-                    exp_e = trimmed_exp_e
-                    
-                    # Ensure exp_e is still valid after trimming
-                    # If trimming made exp_e <= exp_s, fall back to using just the main block (s:e)
-                    # This ensures we don't skip windows that contain important content
-                    if exp_e <= exp_s:
-                        LOGGER.warning(
-                            f"Window {window_id}: exp_e ({exp_e}) <= exp_s ({exp_s}) after trimming. "
-                            f"Falling back to main block s={s}, e={e}"
-                        )
-                        # Use main block instead of expanded window
-                        exp_s = s
-                        exp_e = e
-                        # Ensure we have at least one paragraph
-                        if exp_e <= exp_s:
-                            exp_e = min(exp_s + 1, len(sec_body))
-                    
-                    expanded = sec_body[exp_s:exp_e]
-                    while expanded and approx_size(expanded) > max_chars:
-                        expanded = expanded[:-1]
-                    
-                    # Ensure expanded is not empty - if it is, use at least the main block
-                    if not expanded:
-                        LOGGER.warning(
-                            f"Window {window_id}: expanded is empty after trimming. Using main block s={s}, e={e}"
-                        )
-                        expanded = sec_body[s:e]
-                        if not expanded:
-                            # Last resort: use at least one paragraph
-                            if s < len(sec_body):
-                                expanded = [sec_body[s]]
-                            else:
-                                LOGGER.warning(f"Window {window_id}: Cannot create window, skipping")
-                                continue
-                    
-                    # Final safety check: remove any headings that might have slipped in
-                    if expanded:
-                        expanded = [p for p in expanded if not _is_heading_paragraph(p.text)]
-                        
-                        # Verify all paragraphs belong to the same section (si)
-                        if expanded:
-                            first_para_section = section_by_idx.get(expanded[0].paragraph_index)
-                            if first_para_section:
-                                first_si, _ = first_para_section
-                                # Filter to only paragraphs from the same section
-                                filtered_expanded = []
-                                for p in expanded:
-                                    para_section = section_by_idx.get(p.paragraph_index)
-                                    if para_section and para_section[0] == first_si:
-                                        filtered_expanded.append(p)
-                                    else:
-                                        # Hit a different section, stop here
-                                        break
-                                expanded = filtered_expanded
-                                
-                                if len(expanded) < len(sec_body[exp_s:exp_e]):
-                                    LOGGER.debug(
-                                        f"Window {window_id}: Trimmed expanded window from {len(sec_body[exp_s:exp_e])} "
-                                        f"to {len(expanded)} paragraphs to stay within section {first_si} boundaries"
-                                    )
-                                
-                                # If filtering removed all paragraphs, fall back to main block
-                                if not expanded:
-                                    LOGGER.warning(
-                                        f"Window {window_id}: Section filtering removed all paragraphs. "
-                                        f"Falling back to main block s={s}, e={e}"
-                                    )
-                                    expanded = sec_body[s:e]
-                                    if not expanded and s < len(sec_body):
-                                        expanded = [sec_body[s]]
-
-                    # Use the trimmed expanded window, not the original exp_s:exp_e
-                    # Check cancellation before creating new tasks
+                    # Check cancellation before processing each section
                     if _is_cancelled(job_id):
                         # Cancel all existing tasks
                         for t in window_tasks:
@@ -1649,27 +1846,258 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             _clear_live_trace(job_id)
                         return
                     
-                    start_i = exp_s
-                    end_i = exp_s + len(expanded) if expanded else exp_s
-                    window_id = f"w_{sec_body[s].paragraph_index:04d}_{sec_body[min(e-1, len(sec_body)-1)].paragraph_index:04d}"
-                    
-                    # Log window info for debugging
-                    if expanded:
-                        para_indices = [p.paragraph_index for p in expanded]
-                        LOGGER.debug(
-                            f"Window {window_id}: section {si} ({sec_path}), "
-                            f"expanded from {exp_s} to {exp_e} (len={len(expanded)}), "
-                            f"paragraph indices: {para_indices[:5]}{'...' if len(para_indices) > 5 else ''}"
+                    sec_body = [p for p in sec if not _is_heading_paragraph(p.text)]
+                    if not sec_body:
+                        continue
+                    sec_heading = section_heading_by_i.get(si)
+                    sec_path = section_path_by_i.get(si, "")
+
+                    starts: list[int] = [0]
+                    while True:
+                        prev = starts[-1]
+                        need = stride_tokens
+                        i = prev
+                        while i < len(sec_body) and need > 0:
+                            need -= _approx_tokens(sec_body[i].text)
+                            i += 1
+                        if i >= len(sec_body):
+                            break
+                        starts.append(i)
+
+                    last_main_s = -1
+                    last_main_e = -1
+                    for s in starts:
+                        t = 0
+                        e = s
+                        while e < len(sec_body) and t < window_tokens:
+                            t += _approx_tokens(sec_body[e].text)
+                            e += 1
+                        if e <= s:
+                            e = min(len(sec_body), s + 1)
+                        # Skip fully-contained windows to avoid redundant duplicates
+                        if last_main_s >= 0 and last_main_e >= 0:
+                            if s >= last_main_s and e <= last_main_e:
+                                continue
+                        main_block = sec_body[s:e]
+
+                        joined = "\n\n".join(p.text for p in main_block)
+                        near_start, near_end = _find_trigger_edges(joined, edge_frac)
+                        exp_s, exp_e = _extend_window_by_stride(
+                            sec_body, s, e, stride_tokens=stride_tokens, extend_left=near_start, extend_right=near_end
                         )
-                    
-                    window_tasks.append(asyncio.create_task(classify_window(
-                        sec_body, start_i, end_i, window_id=window_id,
-                        main_start=s, main_end=e,
-                        sec_heading=sec_heading, sec_path=sec_path,
-                        all_sec_paras=sec_body,  # Pass full section for cross-paragraph quote search
-                    )))
+                        # CRITICAL: Ensure expansion stays within sec_body boundaries (one section only)
+                        # sec_body already contains only paragraphs from the current section (heading removed)
+                        # So we just need to clamp exp_s and exp_e to [0, len(sec_body)]
+                        exp_s = max(0, min(exp_s, len(sec_body)))
+                        exp_e = max(exp_s, min(exp_e, len(sec_body)))
+                        
+                        # CRITICAL: Before creating expanded, check for headings from different sections
+                        # This prevents mixing paragraphs from different sections (e.g., 5.6 and 5.8)
+                        # Get current section number for comparison
+                        current_section_heading = section_heading_by_i.get(si)
+                        current_num = None
+                        if current_section_heading:
+                            current_heading = parse_heading(current_section_heading.text or "", max_len=160)
+                            if current_heading:
+                                label = current_heading.label
+                                num_match = re.search(r"(\d+(?:\.\d+)*)", label)
+                                if num_match:
+                                    current_num = num_match.group(1)
+                        
+                        # Check paragraphs in exp_s:exp_e range for headings from different sections
+                        # Pattern 1: "5.8. Title. Body..." - heading with period, then body starts with capital
+                        heading_start_pattern1 = re.compile(
+                            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Za-z\s]{2,}?)\s*\.\s+[A-Z]",
+                            re.IGNORECASE
+                        )
+                        # Pattern 2: "6. INTERPRETATION... 6.1 Assignment..." - heading, then subsection number
+                        heading_start_pattern2 = re.compile(
+                            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Z\s]{5,}?)\s+(\d+\.\d+)",
+                            re.IGNORECASE
+                        )
+                        
+                        # Find the first paragraph that looks like a heading from a different section
+                        # Also stop at address/contact info blocks that typically appear before new sections
+                        trimmed_exp_e = exp_e
+                        for i in range(exp_s, exp_e):
+                            p = sec_body[i]
+                            para_text = (p.text or "").strip()
+                            
+                            # Check if it's address/contact info - these often appear before new sections
+                            # and shouldn't be in the current section's window
+                            if _is_signature_paragraph(para_text):
+                                # This looks like address/contact info - stop here to avoid mixing sections
+                                trimmed_exp_e = i
+                                LOGGER.warning(
+                                    f"Window {window_id}: Found address/contact info at paragraph {p.paragraph_index} "
+                                    f"(text: {para_text[:60]}...), trimming exp_e from {exp_e} to {trimmed_exp_e}"
+                                )
+                                break
+                            
+                            # Check if entire paragraph is a heading
+                            if _is_heading_paragraph(para_text):
+                                # This is a heading - stop here
+                                trimmed_exp_e = i
+                                LOGGER.warning(
+                                    f"Window {window_id}: Found heading at paragraph {p.paragraph_index}, trimming exp_e from {exp_e} to {trimmed_exp_e}"
+                                )
+                                break
+                            
+                            # Check if paragraph starts with heading pattern
+                            m = heading_start_pattern1.match(para_text) or heading_start_pattern2.match(para_text)
+                            if m:
+                                num_part = m.group(1)
+                                title_part = m.group(2).strip()
+                                if title_part.endswith('.'):
+                                    title_part = title_part[:-1].strip()
+                                
+                                # Check if title looks like a heading
+                                words = title_part.split()[:10]
+                                if words:
+                                    uppercase_words = sum(1 for w in words if w.isupper() and len(w) > 1)
+                                    titlecase_words = sum(1 for w in words if w and w[0].isupper() and not w.isupper())
+                                    uppercase_ratio = uppercase_words / len(words) if words else 0
+                                    titlecase_ratio = titlecase_words / len(words) if words else 0
+                                    is_short_heading = len(words) <= 5
+                                    is_uppercase_heading = uppercase_ratio >= 0.5
+                                    is_title_case_short = (2 <= len(words) <= 4 and titlecase_ratio >= 0.5)
+                                    
+                                    if is_uppercase_heading or is_short_heading or is_title_case_short:
+                                        # Compare section numbers
+                                        if current_num:
+                                            if num_part != current_num:
+                                                is_subsection = num_part.startswith(current_num + ".")
+                                                is_parent_section = current_num.startswith(num_part + ".")
+                                                if not is_subsection and not is_parent_section:
+                                                    # Different section - stop here (don't include this paragraph)
+                                                    trimmed_exp_e = i
+                                                    LOGGER.warning(
+                                                        f"Window {window_id}: Found different section '{num_part}' (current: '{current_num}') "
+                                                        f"at paragraph {p.paragraph_index} (text: {para_text[:60]}...), "
+                                                        f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
+                                                    )
+                                                    break
+                                        else:
+                                            # No current section number, but found a heading - stop to be safe
+                                            trimmed_exp_e = i
+                                            LOGGER.warning(
+                                                f"Window {window_id}: Found heading '{num_part}' but current section has no number, "
+                                                f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
+                                            )
+                                            break
+                        
+                        exp_e = trimmed_exp_e
+                        
+                        # Ensure exp_e is still valid after trimming
+                        # If trimming made exp_e <= exp_s, fall back to using just the main block (s:e)
+                        # This ensures we don't skip windows that contain important content
+                        if exp_e <= exp_s:
+                            LOGGER.warning(
+                                f"Window {window_id}: exp_e ({exp_e}) <= exp_s ({exp_s}) after trimming. "
+                                f"Falling back to main block s={s}, e={e}"
+                            )
+                            # Use main block instead of expanded window
+                            exp_s = s
+                            exp_e = e
+                            # Ensure we have at least one paragraph
+                            if exp_e <= exp_s:
+                                exp_e = min(exp_s + 1, len(sec_body))
+                        
+                        expanded = sec_body[exp_s:exp_e]
+                        while expanded and approx_size(expanded) > max_chars:
+                            expanded = expanded[:-1]
+                        
+                        # Ensure expanded is not empty - if it is, use at least the main block
+                        if not expanded:
+                            LOGGER.warning(
+                                f"Window {window_id}: expanded is empty after trimming. Using main block s={s}, e={e}"
+                            )
+                            expanded = sec_body[s:e]
+                            if not expanded:
+                                # Last resort: use at least one paragraph
+                                if s < len(sec_body):
+                                    expanded = [sec_body[s]]
+                                else:
+                                    LOGGER.warning(f"Window {window_id}: Cannot create window, skipping")
+                                    continue
+                        
+                        # Final safety check: remove any headings that might have slipped in
+                        if expanded:
+                            expanded = [p for p in expanded if not _is_heading_paragraph(p.text)]
+                            
+                            # Verify all paragraphs belong to the same section (si)
+                            if expanded:
+                                first_para_section = section_by_idx.get(expanded[0].paragraph_index)
+                                if first_para_section:
+                                    first_si, _ = first_para_section
+                                    # Filter to only paragraphs from the same section
+                                    filtered_expanded = []
+                                    for p in expanded:
+                                        para_section = section_by_idx.get(p.paragraph_index)
+                                        if para_section and para_section[0] == first_si:
+                                            filtered_expanded.append(p)
+                                        else:
+                                            # Hit a different section, stop here
+                                            break
+                                    expanded = filtered_expanded
+                                    
+                                    if len(expanded) < len(sec_body[exp_s:exp_e]):
+                                        LOGGER.debug(
+                                            f"Window {window_id}: Trimmed expanded window from {len(sec_body[exp_s:exp_e])} "
+                                            f"to {len(expanded)} paragraphs to stay within section {first_si} boundaries"
+                                        )
+                                    
+                                    # If filtering removed all paragraphs, fall back to main block
+                                    if not expanded:
+                                        LOGGER.warning(
+                                            f"Window {window_id}: Section filtering removed all paragraphs. "
+                                            f"Falling back to main block s={s}, e={e}"
+                                        )
+                                        expanded = sec_body[s:e]
+                                        if not expanded and s < len(sec_body):
+                                            expanded = [sec_body[s]]
+
+                        # Use the trimmed expanded window, not the original exp_s:exp_e
+                        # Check cancellation before creating new tasks
+                        if _is_cancelled(job_id):
+                            # Cancel all existing tasks
+                            for t in window_tasks:
+                                if not t.done():
+                                    t.cancel()
+                            await update_job(paths.db, job_id, status=JobStatus.cancelled, stage="cancelled", progress=100, error="CANCELLED")
+                            if enable_debug_window:
+                                _clear_live_trace(job_id)
+                            return
+                        
+                        start_i = exp_s
+                        end_i = exp_s + len(expanded) if expanded else exp_s
+                        window_id = f"w_{sec_body[s].paragraph_index:04d}_{sec_body[min(e-1, len(sec_body)-1)].paragraph_index:04d}"
+                        
+                        # Log window info for debugging
+                        if expanded:
+                            para_indices = [p.paragraph_index for p in expanded]
+                            LOGGER.debug(
+                                f"Window {window_id}: section {si} ({sec_path}), "
+                                f"expanded from {exp_s} to {exp_e} (len={len(expanded)}), "
+                                f"paragraph indices: {para_indices[:5]}{'...' if len(para_indices) > 5 else ''}"
+                            )
+                        
+                        t = asyncio.create_task(
+                            classify_window(
+                                sec_body, start_i, end_i, window_id=window_id,
+                                main_start=s, main_end=e,
+                                sec_heading=sec_heading, sec_path=sec_path,
+                                all_sec_paras=sec_body,  # Pass full section for cross-paragraph quote search
+                            )
+                        )
+                        _register_job_task(job_id, t)
+                        window_tasks.append(t)
+                        last_main_s = s
+                        last_main_e = e
 
             done = 0
+            succeeded = 0
+            failed = 0
             # Use asyncio.wait to check cancellation more frequently
             pending = set(window_tasks)
             while pending:
@@ -1692,10 +2120,11 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 
                 # Process completed tasks
                 for task in done_tasks:
-                    findings_before = len(findings)
+                    findings_before = len(window_findings)
                     try:
                         await task
-                        findings_after = len(findings)
+                        succeeded += 1
+                        findings_after = len(window_findings)
                         if findings_after > findings_before:
                             LOGGER.info(
                                 f"Window task completed: added {findings_after - findings_before} findings. "
@@ -1705,6 +2134,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         # Task was cancelled, ignore
                         pass
                     except Exception as exc:
+                        failed += 1
                         if enable_debug_window:
                             _set_live_trace(job_id, {"phase": "error", "ts": time.time(), "error": str(exc)[:2000]})
                         # Don't raise - continue processing other tasks
@@ -1714,6 +2144,17 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         prog = 55 + int(40 * (done / max(1, len(window_tasks))))
                         await update_job(paths.db, job_id, stage="processing", progress=min(95, prog))
 
+            if window_tasks and succeeded == 0:
+                raise RuntimeError(
+                    "Error. The most likely cause is an invalid API key. "
+                    "If you changed Base URL or Model, verify they are correct."
+                )
+            # Build a deterministic findings list (order does not depend on task completion).
+            if window_findings:
+                window_findings.sort(key=lambda t: (t[1], t[0], t[2].category_id))
+                findings = [t[2] for t in window_findings]
+            else:
+                findings = []
             findings = dedupe_findings(findings)
         else:
             # Legacy mode (stage1 router + stage2) kept for fallback.
@@ -1754,9 +2195,14 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                     expanded = sec_body[exp_s:exp_e]
                     while expanded and approx_size(expanded) > max_chars:
                         expanded = expanded[:-1]
-                    stage1_tasks.append(run_stage1_block(expanded, context_block))
+                    t = asyncio.create_task(run_stage1_block(expanded, context_block))
+                    _register_job_task(job_id, t)
+                    stage1_tasks.append(t)
             for coro in asyncio.as_completed(stage1_tasks):
-                await coro
+                try:
+                    await coro
+                except asyncio.CancelledError:
+                    pass
             LOGGER.info("Job %s stage1 complete", job_id)
             await update_job(paths.db, job_id, stage="stage2", progress=55)
             findings = []
@@ -1842,10 +2288,15 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 if p is None:
                     continue
                 for cat in cats:
-                    stage2_tasks.append(stage2_one(p, cat))
+                    t = asyncio.create_task(stage2_one(p, cat))
+                    _register_job_task(job_id, t)
+                    stage2_tasks.append(t)
             done = 0
             for coro in asyncio.as_completed(stage2_tasks):
-                item = await coro
+                try:
+                    item = await coro
+                except asyncio.CancelledError:
+                    item = None
                 done += 1
                 if item is not None:
                     findings.append(item)
@@ -1891,14 +2342,25 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             findings=findings,
             meta=ResultMeta(
                 categories_version=cats_payload.get("version", "cuad_subset_v1"),
-                prompt_version="p_single_v2_uklaw" if single_classifier else "p_v1",
-                models={"classifier": llm.cfg.model_stage2} if single_classifier else {"stage_1": llm.cfg.model_stage1, "stage_2": llm.cfg.model_stage2},
+                prompt_version=(
+                    "p_uk_two_stage" if (single_classifier and use_uk_redflags) else ("p_single_legacy" if single_classifier else "p_other")
+                ),
+                models=(
+                    {"stage_1": llm.cfg.model_stage1, "stage_2": llm.cfg.model_stage2}
+                    if (single_classifier and use_uk_redflags)
+                    else (
+                        {"classifier": llm.cfg.model_stage2}
+                        if single_classifier
+                        else {"stage_1": llm.cfg.model_stage1, "stage_2": llm.cfg.model_stage2}
+                    )
+                ),
                 debug=(
                     {
                         "enabled_paragraph": enable_debug_paragraph,
                         "enabled_window": enable_debug_window,
                         "paragraph_traces": debug_traces,
                         "window_traces": window_traces,
+                        "failed_windows": failed_windows if enable_debug_window else [],
                         "cuad_qa_json": cuad_meta,
                         "fewshot_only_category_ids": sorted(list(only_fewshot_category_ids)) if only_fewshot_category_ids else None,
                         "fewshot": {
@@ -1919,6 +2381,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         if enable_debug_window:
             _clear_live_trace(job_id)
         _CANCELLED.discard(job_id)
+        _JOB_TASKS.pop(job_id, None)
         LOGGER.info("Job %s done", job_id)
     except Exception as e:
         LOGGER.exception("Job %s failed", job_id)
@@ -1928,4 +2391,5 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         if enable_debug_window:
             _clear_live_trace(job_id)
         _CANCELLED.discard(job_id)
+        _JOB_TASKS.pop(job_id, None)
 

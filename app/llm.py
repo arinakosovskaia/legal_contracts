@@ -15,6 +15,7 @@ from .models import (
     Paragraph,
     RedFlagChunkOutput,
     RedFlagFindingLLM,
+    RouterCategoriesOutput,
     Stage1Category,
     Stage1Output,
     Stage1Prob,
@@ -116,13 +117,14 @@ def load_categories_payload(
     *,
     csv_path: Optional[Path] = None,
     json_path: Optional[Path] = None,
+    version: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Prefer CUAD `category_descriptions.csv` if available (generates `configs/categories.json`),
     else fall back to an existing categories.json.
     """
     if csv_path and csv_path.exists():
-        payload = load_categories_from_csv(csv_path)
+        payload = load_categories_from_csv(csv_path, version=version or "cuad_v1_41_from_csv")
         if json_path is not None:
             write_categories_json(payload, json_path)
         return payload
@@ -151,6 +153,11 @@ class LLMConfig:
     stage1_include_descriptions: bool = False
     message_content_mode: str = "string"  # "string" | "parts"
     temperature: float = 0.0
+    seed: Optional[int] = None  # For reproducible outputs (OpenAI and compatible APIs)
+
+
+class QuoteRepairOutput(BaseModel):
+    quote: str = ""
 
 
 class LLMRunner:
@@ -160,16 +167,32 @@ class LLMRunner:
         categories_payload: dict[str, Any],
         *,
         fewshot_by_category: Optional[dict[str, list[dict[str, str]]]] = None,
+        uk_fewshot_text: Optional[str] = None,
     ) -> None:
         self.client = AsyncOpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
         self.cfg = cfg
         self.sem = asyncio.Semaphore(cfg.max_concurrency)
         self.categories_payload = categories_payload
         self.fewshot_by_category = fewshot_by_category or {}
+        self.uk_fewshot_text = (uk_fewshot_text or "").strip()
         self.categories_block = _categories_block(
             categories_payload, include_descriptions=cfg.stage1_include_descriptions
         )
         self.category_ids = [c["id"] for c in categories_payload.get("categories", [])]
+        self.category_name_by_id = {
+            str(c.get("id", "")).strip(): str(c.get("name", "")).strip()
+            for c in categories_payload.get("categories", [])
+        }
+        self.category_id_by_name = {
+            str(c.get("name", "")).strip().lower(): str(c.get("id", "")).strip()
+            for c in categories_payload.get("categories", [])
+        }
+        self._canonical_name_by_norm: dict[str, str] = {}
+        for c in categories_payload.get("categories", []):
+            name = str(c.get("name", "")).strip()
+            if not name:
+                continue
+            self._canonical_name_by_norm[self._normalize_category_name(name)] = name
 
         self.redflag_category_id_by_name: dict[str, str] = {
             "Termination For Convenience": "termination_for_convenience",
@@ -182,6 +205,30 @@ class LLMRunner:
         # Build once per runner (keeps prompts stable and avoids repeated work).
         self._redflag_fewshot_block: str = self._build_redflag_fewshot_examples()
         self._redflag_definitions_block: str = self._build_redflag_definitions_block()
+
+    def _build_quote_repair_prompt(self, *, paragraph_text: str, target_quote: str) -> tuple[str, str]:
+        system = (
+            "You are a precise text extractor. "
+            "Given a PARAGRAPH and a TARGET QUOTE (which may be approximate), "
+            "return the exact verbatim substring from the PARAGRAPH that best matches the target. "
+            "If you cannot find a clear match, return an empty string."
+        )
+        user = (
+            "Return JSON only in the form: {\"quote\": \"...\"}\n\n"
+            f"PARAGRAPH:\n{paragraph_text}\n\nTARGET QUOTE:\n{target_quote}"
+        )
+        return system, user
+
+    async def repair_quote_from_paragraph(self, *, paragraph_text: str, target_quote: str) -> str:
+        if not paragraph_text or not target_quote:
+            return ""
+        system, user = self._build_quote_repair_prompt(
+            paragraph_text=paragraph_text, target_quote=target_quote
+        )
+        out, _ = await self._call_json_and_raw(
+            self.cfg.model_stage2, system, user, QuoteRepairOutput
+        )
+        return (out.quote or "").strip()
 
     def _build_redflag_fewshot_examples(self) -> str:
         """
@@ -366,12 +413,56 @@ class LLMRunner:
                 lines.append(f"- {name}: (no description found in category_descriptions.csv)")
         return "\n".join(lines).strip()
 
+    def _build_uk_category_blocks(self) -> tuple[str, str, list[str]]:
+        """
+        Build (categories_list, category_definitions, category_ids) blocks for UK tenancy categories.
+        Uses canonical category IDS in the prompt (matches legacy id-based handling).
+        """
+        list_lines: list[str] = []
+        def_lines: list[str] = []
+        ids: list[str] = []
+        for c in self.categories_payload.get("categories", []):
+            cid = str(c.get("id", "")).strip()
+            name = str(c.get("name", "")).strip()
+            desc = str(c.get("description", "") or "").strip()
+            if not cid:
+                continue
+            ids.append(cid)
+            list_lines.append(f"- {cid}")
+            if desc:
+                def_lines.append(f"- {cid} ({name}): {desc}")
+            else:
+                def_lines.append(f"- {cid} ({name}): (no description)")
+        return "\n".join(list_lines).strip(), "\n".join(def_lines).strip(), ids
+
+    def resolve_category_id(self, value: str) -> str:
+        v = (value or "").strip()
+        if not v:
+            return v
+        if v in self.category_ids:
+            return v
+        v_lower = v.lower()
+        if v_lower in self.category_id_by_name:
+            return self.category_id_by_name[v_lower]
+        if v in self.redflag_category_id_by_name:
+            return self.redflag_category_id_by_name[v]
+        for k, cid in self.redflag_category_id_by_name.items():
+            if k.lower() == v_lower:
+                return cid
+        return v_lower.replace(" ", "_")
+
+    def _normalize_category_name(self, name: str) -> str:
+        return " ".join((name or "").split()).strip().casefold()
+
+    def normalize_category_name(self, name: str) -> str:
+        key = self._normalize_category_name(name)
+        return self._canonical_name_by_norm.get(key, (name or "").strip())
+
     def _build_redflag_prompt(
         self,
         *,
         text_chunk: str,
         section_path: str,
-        max_findings: int,
     ) -> tuple[str, str, dict[str, Any]]:
         """
         Build the red flag classification prompt.
@@ -399,7 +490,6 @@ class LLMRunner:
         user, sections_dict = format_redflag_prompt(
             categories_list="\n".join("- " + c for c in categories),
             section_path=section_path or "(none)",
-            max_findings=max_findings,
             category_definitions=defs,
             fewshot_section=fewshot_section,
             text_chunk=text_chunk,
@@ -409,17 +499,145 @@ class LLMRunner:
             "context_prefix": section_path or "",
         }
         return system, user, sections
+
+    def _build_uk_router_prompt(
+        self,
+        *,
+        text_chunk: str,
+        section_path: str,
+    ) -> tuple[str, str, dict[str, Any]]:
+        from .prompts import get_uk_router_system_prompt, format_uk_router_prompt
+
+        categories_list, defs, _names = self._build_uk_category_blocks()
+        system = get_uk_router_system_prompt()
+        user, sections_dict = format_uk_router_prompt(
+            categories_list=categories_list,
+            section_path=section_path or "(none)",
+            category_definitions=defs,
+            text_chunk=text_chunk,
+        )
+        sections: dict[str, Any] = {
+            **sections_dict,
+            "context_prefix": section_path or "",
+        }
+        return system, user, sections
+
+    def _build_uk_redflag_prompt(
+        self,
+        *,
+        text_chunk: str,
+        section_path: str,
+        allowed_category_ids: list[str],
+    ) -> tuple[str, str, dict[str, Any]]:
+        from .prompts import get_uk_redflag_system_prompt, format_uk_redflag_prompt
+
+        allowed_set = {n.strip() for n in allowed_category_ids if n and n.strip()}
+        list_lines: list[str] = []
+        def_lines: list[str] = []
+        for c in self.categories_payload.get("categories", []):
+            name = str(c.get("name", "")).strip()
+            cid = str(c.get("id", "")).strip()
+            if cid not in allowed_set:
+                continue
+            desc = str(c.get("description", "") or "").strip()
+            list_lines.append(f"- {cid}")
+            def_lines.append(f"- {cid} ({name}): {desc}" if desc else f"- {cid} ({name}): (no description)")
+        categories_list = "\n".join(list_lines).strip()
+        category_definitions = "\n".join(def_lines).strip()
+        fewshot_section = self.uk_fewshot_text or "(none provided)"
+        system = get_uk_redflag_system_prompt()
+        user, sections_dict = format_uk_redflag_prompt(
+            categories_list=categories_list,
+            section_path=section_path or "(none)",
+            category_definitions=category_definitions,
+            fewshot_section=fewshot_section,
+            text_chunk=text_chunk,
+        )
+        sections: dict[str, Any] = {
+            **sections_dict,
+            "context_prefix": section_path or "",
+        }
+        return system, user, sections
+
+    async def classify_redflags_for_chunk_v2(
+        self,
+        *,
+        text_chunk: str,
+        section_path: str = "",
+        return_prompt: bool = False,
+    ) -> tuple[RedFlagChunkOutput, str, Optional[dict[str, Any]]]:
+        text_chunk_clean = text_chunk
+        router_system, router_user, router_sections = self._build_uk_router_prompt(
+            text_chunk=text_chunk_clean,
+            section_path=section_path,
+        )
+        router_out, router_raw = await self._call_json_and_raw(
+            self.cfg.model_stage1, router_system, router_user, RouterCategoriesOutput
+        )
+        _list, _defs, all_ids = self._build_uk_category_blocks()
+        allowed_ids = []
+        for item in router_out.candidate_categories or []:
+            name_raw = (item.category or "").strip()
+            if not name_raw:
+                continue
+            cid = self.resolve_category_id(name_raw)
+            if cid in all_ids and cid not in allowed_ids:
+                allowed_ids.append(cid)
+        if not allowed_ids:
+            out = RedFlagChunkOutput(findings=[])
+            prompt: Optional[dict[str, Any]] = None
+            if return_prompt:
+                prompt = {
+                    "system": "SKIPPED: no router categories",
+                    "user": "SKIPPED: no router categories",
+                    "sections": {
+                        "context_prefix": section_path or "",
+                        "text_chunk": text_chunk_clean,
+                        "category_definitions": "",
+                        "fewshot_examples": "",
+                    },
+                    "router": {
+                        "system": router_system,
+                        "user": router_user,
+                        "sections": router_sections,
+                        "raw": router_raw,
+                        "parsed": router_out.model_dump(),
+                    },
+                }
+            return out, "", prompt
+        system, user, sections = self._build_uk_redflag_prompt(
+            text_chunk=text_chunk_clean,
+            section_path=section_path,
+            allowed_category_ids=allowed_ids,
+        )
+        out, raw = await self._call_json_and_raw(
+            self.cfg.model_stage2, system, user, RedFlagChunkOutput
+        )
+        prompt = None
+        if return_prompt:
+            prompt = {
+                "system": system,
+                "user": user,
+                "sections": sections,
+                "router": {
+                    "system": router_system,
+                    "user": router_user,
+                    "sections": router_sections,
+                    "raw": router_raw,
+                    "parsed": router_out.model_dump(),
+                },
+            }
+        return out, raw, prompt
     async def classify_redflags_for_chunk(
         self,
         *,
         text_chunk: str,
         section_path: str = "",
-        max_findings: int = 2,
         return_prompt: bool = False,
     ) -> tuple[RedFlagChunkOutput, str, Optional[dict[str, str]]]:
         """
         Single-classifier mode:
-        classify one TEXT CHUNK and return up to 2 findings with verbatim evidence.
+        classify one TEXT CHUNK and return all findings with verbatim evidence (no limit).
         
         Note: text_chunk should already be normalized before calling this function.
         LLM will see normalized text and return quote from it.
@@ -429,10 +647,27 @@ class LLMRunner:
         system, user, sections = self._build_redflag_prompt(
             text_chunk=text_chunk_clean,
             section_path=section_path,
-            max_findings=max_findings,
         )
 
-        out, raw = await self._call_json_and_raw(self.cfg.model_stage2, system, user, RedFlagChunkOutput)
+        best_of = int(os.environ.get("LLM_BEST_OF", "2"))
+        best_of = max(1, best_of)
+        best_out: Optional[RedFlagChunkOutput] = None
+        best_raw = ""
+        best_count = -1
+        for _ in range(best_of):
+            out_i, raw_i = await self._call_json_and_raw(
+                self.cfg.model_stage2, system, user, RedFlagChunkOutput
+            )
+            count_i = len(out_i.findings or [])
+            if count_i > best_count:
+                best_out = out_i
+                best_raw = raw_i
+                best_count = count_i
+            # Early stop once we have multiple findings.
+            if best_count >= 3:
+                break
+        out = best_out or RedFlagChunkOutput(findings=[])
+        raw = best_raw
         
         # Log what we got from parsing
         import logging
@@ -450,11 +685,7 @@ class LLMRunner:
         elif not isinstance(out.findings, list):
             logger.error(f"out.findings is not a list: {type(out.findings)}, value: {out.findings}")
             out.findings = []
-        else:
-            original_len = len(out.findings)
-            out.findings = out.findings[:max_findings]
-            if original_len > max_findings:
-                logger.warning(f"Truncated findings from {original_len} to {max_findings}")
+        # Keep all findings (no truncation)
         
         # Log findings (only raw output, no text_chunk) for debugging
         # (logger already imported above)
@@ -513,6 +744,8 @@ class LLMRunner:
                     kwargs: dict[str, Any] = {}
                     if use_response_format:
                         kwargs["response_format"] = {"type": "json_object"}
+                    if self.cfg.seed is not None:
+                        kwargs["seed"] = self.cfg.seed
                     # Create the LLM call as a task so it can be cancelled
                     resp = await self.client.chat.completions.create(
                         model=model,

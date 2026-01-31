@@ -4,173 +4,457 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Contract Red-Flag Detector</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
     <style>
       :root {
-        --bg: #f5f7fb;
-        --ink: #0f172a;
-        --muted: #64748b;
-        --card: #ffffff;
-        --border: #e5e7eb;
+        --bg: #0a0a0a;
+        --ink: #fafafa;
+        --muted: #a1a1aa;
+        --card: #141414;
+        --border: #27272a;
         --accent: #3b82f6;
-        --accent-dark: #1d4ed8;
-        --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+        --radius: 12px;
+        --radius-lg: 16px;
+        --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+        --gradient-btn: linear-gradient(135deg, #22c55e 0%, #06b6d4 50%, #0ea5e9 100%);
+        --transition: 0.2s ease;
       }
       * { box-sizing: border-box; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; color: var(--ink); background: var(--bg); }
-      a { color: inherit; text-decoration: none; }
+      body {
+        font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+        margin: 0;
+        color: var(--ink);
+        background: var(--bg);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: inherit; text-decoration: none; transition: color var(--transition), opacity var(--transition); }
       .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
-      .hero { background: linear-gradient(120deg, #0f172a 0%, #1e3a8a 60%, #1d4ed8 100%); color: #fff; padding: 72px 0; }
-      .hero-inner { display: flex; gap: 40px; align-items: center; flex-wrap: wrap; justify-content: center; }
-      .hero-copy { width: 100%; max-width: 760px; }
-      .hero h1 { font-size: 44px; line-height: 1.08; margin: 8px 0 16px; }
-      .hero .eyebrow { text-transform: uppercase; letter-spacing: 0.12em; font-size: 12px; color: #93c5fd; }
-      .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; justify-content: center; width: 100%; }
-      .section { padding: 48px 0; }
-      .section-header { margin-bottom: 18px; }
-      .row-between { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-      .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
+      h2 { font-size: 1.75rem; font-weight: 600; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
+      h3 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1rem; letter-spacing: -0.01em; }
+      h4 { font-size: 1.05rem; font-weight: 600; margin: 0; }
+
+      .top-nav {
+        position: sticky; top: 0; z-index: 50;
+        background: rgba(0, 0, 0, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        color: #fff;
+        padding: 16px 24px;
+        display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 16px;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .top-nav-links { display: flex; align-items: center; gap: 28px; flex-wrap: nowrap; min-width: 0; }
+      .top-nav-links a {
+        color: rgba(255,255,255,0.9);
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        transition: color var(--transition);
+      }
+      .top-nav-links a:hover { color: #fff; }
+      .top-nav-right { display: flex; align-items: center; gap: 12px; }
+
+      .hero {
+        background: #000;
+        color: #fff;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 32px 24px;
+      }
+      .hero-inner { max-width: 720px; margin: 0 auto; }
+      .hero-copy { width: 100%; }
+      .hero h1 {
+        font-size: clamp(2rem, 5vw, 2.75rem);
+        line-height: 1.2;
+        margin: 0 0 2rem;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+      .hero-actions { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-top: 1.5rem; }
+      .btn.hero-start, .btn.hero-demo {
+        padding: 14px 28px;
+        font-size: 15px;
+        font-weight: 600;
+        background: var(--gradient-btn);
+        color: #fff;
+        border: none;
+        border-radius: var(--radius);
+        transition: transform var(--transition), opacity var(--transition), box-shadow var(--transition);
+      }
+      .btn.hero-start:hover, .btn.hero-demo:hover {
+        opacity: 0.95;
+        transform: translateY(-1px);
+        box-shadow: 0 8px 24px rgba(14, 165, 233, 0.25);
+      }
+      .btn.hero-start:active, .btn.hero-demo:active { transform: translateY(0); }
+
+      .section { padding: 48px 0; background: var(--bg); color: var(--ink); }
+      .section-header { margin-bottom: 24px; }
+      .row-between { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: nowrap; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        box-shadow: var(--shadow);
+        color: var(--ink);
+      }
       .muted { color: var(--muted); }
-      .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-      .step-num { width: 34px; height: 34px; border-radius: 10px; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
-      .form-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+      .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; }
+      .step-num {
+        width: 40px; height: 40px;
+        border-radius: var(--radius);
+        background: rgba(34, 197, 94, 0.2);
+        color: #22c55e;
+        display: inline-flex;
+        align-items: center; justify-content: center;
+        font-weight: 700;
+        font-size: 1rem;
+        margin-bottom: 12px;
+      }
+      .form-grid { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 24px; }
+      .form-grid.form-row { flex-wrap: nowrap; }
       .field { flex: 1 1 220px; min-width: 220px; }
       .field.full { flex: 2 1 420px; }
-      .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-      .inline-toggle { display: flex; gap: 8px; align-items: center; }
-      .inline-toggle input { width: auto; margin: 0; }
-      .inline-toggle span { color: var(--muted); font-size: 14px; line-height: 1.4; }
-      .debug-toggle { display: flex; gap: 8px; align-items: flex-start; }
-      .debug-toggle input { width: auto; margin-top: 2px; }
-      .debug-toggle span { color: var(--muted); font-size: 14px; line-height: 1.4; }
-      input, select { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
-      input[type="file"] { padding: 8px; background: #f8fafc; }
-      button { cursor: pointer; border: none; }
-      .btn { padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 14px; }
-      .btn.hero-main { padding: 12px 22px; font-size: 16px; }
-      .btn.primary, .btn.secondary { padding: 12px 20px; font-size: 15px; }
-      .btn.primary { background: var(--accent); color: #fff; }
-      .btn.primary:hover { background: var(--accent-dark); }
-      .btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255, 255, 255, 0.4); }
-      .btn.ghost.dark { color: var(--ink); border: 1px solid var(--border); background: #fff; font-size: 14px; }
-      .btn.secondary { background: #e2e8f0; color: #1e293b; }
-      .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-      .toggle { display: flex; gap: 8px; align-items: flex-start; }
-      .toggle label { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
-      .toggle input { margin-top: 2px; }
-      .status { display: flex; gap: 12px; align-items: center; margin-top: 16px; padding: 12px; border-radius: 12px; background: #f8fafc; border: 1px solid var(--border); }
-      .status-title { font-weight: 700; }
-      .spinner { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #cbd5f5; border-top-color: #4f46e5; animation: spin 1s linear infinite; }
+      .field label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.01em; }
+      .inline-toggle, .debug-toggle { 
+        display: flex; 
+        gap: 4px; 
+        align-items: center; 
+        margin: 0;
+      }
+      .debug-toggle + .debug-toggle { margin-top: 0; }
+      .inline-toggle input, .debug-toggle input { 
+        width: auto; 
+        margin: 0; 
+        flex-shrink: 0;
+      }
+      .inline-toggle span, .debug-toggle span { 
+        color: var(--muted); 
+        font-size: 14px; 
+        line-height: 1.4; 
+        margin: 0;
+        display: flex;
+        align-items: center;
+      }
+      input, select {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: var(--radius);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        font-size: 14px;
+        font-family: inherit;
+        background: var(--bg);
+        color: var(--ink);
+        transition: border-color var(--transition), box-shadow var(--transition);
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+        box-sizing: border-box !important;
+        line-height: 1.4;
+        margin: 0;
+        vertical-align: middle;
+      }
+      input:focus, select:focus {
+        outline: none;
+        border-color: rgba(59, 130, 246, 0.65);
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+      }
+      .field-error input, .field-error select, .field-error textarea {
+        border-color: rgba(239, 68, 68, 0.9) !important;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+      }
+      .field-error .error-text {
+        display: block;
+        margin-top: 6px;
+        font-size: 12px;
+        color: #fca5a5;
+      }
+      input[type="file"] { 
+        padding: 10px 14px !important; 
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+        line-height: 1.4;
+        box-sizing: border-box !important;
+      }
+      input[type="password"], 
+      input[type="text"],
+      input[type="email"] {
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+        box-sizing: border-box !important;
+      }
+      input::placeholder { color: var(--muted); opacity: 0.9; }
+      textarea {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: var(--radius);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        font-size: 14px;
+        font-family: inherit;
+        background: var(--bg);
+        color: var(--ink);
+        transition: border-color var(--transition), box-shadow var(--transition);
+        box-sizing: border-box;
+        line-height: 1.5;
+        resize: vertical;
+      }
+      textarea:focus {
+        outline: none;
+        border-color: rgba(59, 130, 246, 0.65);
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+      }
+      textarea::placeholder { color: var(--muted); opacity: 0.9; }
+      select { 
+        cursor: pointer; 
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23a1a1aa' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 14px center;
+        padding-right: 36px;
+        box-sizing: border-box !important;
+      }
+      .select-compact {
+        font-size: 14px;
+        padding: 12px 14px;
+        height: 44px !important;
+        min-height: 44px !important;
+        max-height: 44px !important;
+      }
+      button { cursor: pointer; border: none; font-family: inherit; }
+      .btn {
+        padding: 10px 18px;
+        border-radius: var(--radius);
+        font-weight: 600;
+        font-size: 14px;
+        transition: background var(--transition), color var(--transition), border-color var(--transition), transform var(--transition), opacity var(--transition);
+      }
+      .btn.primary {
+        background: var(--gradient-btn);
+        color: #fff;
+      }
+      .btn.primary:hover { opacity: 0.95; transform: translateY(-1px); }
+      .btn.primary:active { transform: translateY(0); }
+      .btn.ghost {
+        background: transparent;
+        color: #fff;
+        border: 1px solid rgba(255, 255, 255, 0.35);
+      }
+      .btn.ghost:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.5); }
+      .btn.ghost.dark {
+        color: var(--ink);
+        border: 1px solid var(--border);
+        background: var(--card);
+      }
+      .btn.ghost.dark:hover { background: var(--border); }
+      .btn.secondary {
+        background: var(--border);
+        color: var(--ink);
+        border: 1px solid var(--border);
+      }
+      .btn.secondary:hover { background: #3f3f46; }
+      .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+      .toggle label { margin: 0; }
+      .status {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        margin-top: 20px;
+        padding: 16px;
+        border-radius: var(--radius);
+        background: var(--card);
+        border: 1px solid var(--border);
+      }
+      .status-title { font-weight: 600; }
+      .spinner {
+        width: 20px; height: 20px;
+        border-radius: 50%;
+        border: 2px solid var(--border);
+        border-top-color: #0ea5e9;
+        animation: spin 0.7s linear infinite;
+      }
       @keyframes spin { to { transform: rotate(360deg); } }
       @keyframes confettiFall {
-        to {
-          transform: translateY(100vh) rotate(720deg);
-          opacity: 0;
-        }
+        to { transform: translateY(100vh) rotate(720deg); opacity: 0; }
       }
       .hidden { display: none; }
       #loginModal { display: none; }
-      #loginModal:not(.hidden) { display: flex; }
-      .notice { border-radius: 12px; padding: 12px 14px; border: 1px solid transparent; margin: 8px 0 16px; }
-      .notice.success { background: #ecfdf3; border-color: #bbf7d0; color: #166534; }
+      #loginModal:not(.hidden) { display: flex; align-items: center; justify-content: center; }
+      .notice {
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        border: 1px solid transparent;
+        margin: 12px 0 20px;
+      }
+      .notice.success { background: rgba(34, 197, 94, 0.12); border-color: rgba(34, 197, 94, 0.4); color: #86efac; }
+      .notice.warn { background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.4); color: #fde047; }
+      .notice .title { font-weight: 600; margin-bottom: 6px; }
       .confetti { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; }
-      .notice.warn { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
-      .notice .title { font-weight: 700; margin-bottom: 4px; }
-      .clause-block .label,
-      .clause-block .value,
-      .clause-block pre { font-size: 14px; font-weight: 400; }
-      .clause-block .label { margin-bottom: 4px; }
-      .split-view { display: flex; gap: 16px; align-items: flex-start; }
+      .clause-block .label, .clause-block .value, .clause-block pre { font-size: 14px; font-weight: 400; }
+      .clause-block .label { margin-bottom: 6px; font-weight: 600; }
+      .split-view { display: flex; gap: 20px; align-items: flex-start; }
       .split-view.hidden { display: none; }
-      .pdf-pane { flex: 1; max-width: 50%; font-size: 14px; line-height: 1.5; }
-      .details-pane { flex: 1; max-width: 50%; font-size: 14px; line-height: 1.5; }
-      .pdf-page { position: relative; margin-bottom: 16px; }
+      .pdf-pane, .details-pane { flex: 1; max-width: 50%; font-size: 14px; line-height: 1.55; }
+      .pdf-page { position: relative; margin-bottom: 20px; }
       .pdf-overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
-      .highlight { position: absolute; background: rgba(250, 204, 21, 0.35); border: 1px solid #f59e0b; border-radius: 4px; cursor: pointer; pointer-events: auto; }
-      .highlight.active { background: rgba(59, 130, 246, 0.3); border-color: #2563eb; }
-      .detail-field { margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
-      .detail-field .label { font-weight: 600; margin-bottom: 4px; font-size: 14px; }
-      .detail-field .value { color: var(--ink); font-size: 14px; line-height: 1.5; }
-      .detail-field ul { margin: 6px 0 0 18px; padding: 0; font-size: 14px; line-height: 1.5; }
-      .annotated-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; align-items: stretch; }
-      .annotated-doc { height: 500px; overflow: auto; font-size: 14px; line-height: 1.5; }
-      .annotated-detail-box { height: 500px; overflow: auto; font-size: 14px; line-height: 1.5; }
-      .annotated-para { margin-bottom: 10px; padding: 6px 8px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
-      .annotated-para:hover { background: #f8fafc; }
-      .hl-inline { background: #fef08a; border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; font-size: 14px; line-height: 1.5; }
-      .hl-inline:hover { background: #fde047; }
-      .hl-inline.active { background: #fbbf24; border: 2px solid #f59e0b; }
-      .clause-block { font-size: 14px; line-height: 1.5; }
-      .clause-block .value { font-size: 14px; line-height: 1.5; }
+      .highlight { position: absolute; background: rgba(250, 204, 21, 0.35); border: 1px solid #f59e0b; border-radius: 6px; cursor: pointer; pointer-events: auto; }
+      .highlight.active { background: rgba(59, 130, 246, 0.35); border-color: #2563eb; }
+      .detail-field { margin-bottom: 16px; font-size: 14px; line-height: 1.55; }
+      .detail-field .label { font-weight: 600; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+      .detail-field .value { color: var(--ink); }
+      .detail-field ul { margin: 8px 0 0 20px; padding: 0; }
+      .annotated-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; align-items: stretch; }
+      .annotated-doc, .annotated-detail-box { height: 520px; overflow: auto; font-size: 14px; line-height: 1.55; border-radius: var(--radius); }
+      .annotated-para { margin-bottom: 12px; padding: 10px 12px; border-radius: var(--radius); font-size: 14px; line-height: 1.55; transition: background var(--transition); }
+      .annotated-para:hover { background: rgba(255,255,255,0.04); }
+      .hl-inline { background: rgba(250, 204, 21, 0.4); border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; transition: background var(--transition); }
+      .hl-inline:hover { background: rgba(250, 204, 21, 0.6); }
+      .hl-inline.active { background: rgba(251, 191, 36, 0.7); border: 2px solid #f59e0b; }
+      .clause-block { font-size: 14px; line-height: 1.55; }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; border-radius: var(--radius); overflow: hidden; }
+      th, td { border: 1px solid var(--border); padding: 12px 14px; vertical-align: top; color: var(--ink); }
+      th { background: var(--card); position: sticky; top: 0; font-weight: 600; font-size: 13px; text-transform: none; letter-spacing: 0.01em; }
+      tr:hover td { background: rgba(255,255,255,0.02); }
+      .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+      .high { background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); }
+      .medium { background: rgba(251, 191, 36, 0.2); border-color: rgba(251, 191, 36, 0.4); }
+      .low { background: rgba(34, 197, 94, 0.2); border-color: rgba(34, 197, 94, 0.4); }
+      pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px; margin: 0; line-height: 1.5; }
+      .login-modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 1000; align-items: center; justify-content: center; }
+      .login-modal-card { max-width: 400px; width: 90%; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 32px; box-shadow: 0 24px 48px rgba(0,0,0,0.4); }
+      .login-modal-card h3 { text-align: center; margin-bottom: 28px; font-size: 1.35rem; }
+      #howSection:not(.hidden) { display: flex; align-items: center; justify-content: center; }
+      #howSection .card { padding: 28px; }
+      #howSection .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; justify-items: stretch; align-items: start; }
+      #howSection .step-num { margin-bottom: 14px; }
+      #howSection h4 { margin: 0 0 8px; }
+      #howSection .muted { font-size: 14px; line-height: 1.5; }
+      .scrollbar-thin { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+      .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+      .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+      .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
       @media (max-width: 980px) {
         .split-view { flex-direction: column; }
         .pdf-pane, .details-pane { max-width: 100%; }
         .annotated-split { grid-template-columns: 1fr; }
-        .annotated-doc { max-height: none; }
+        .annotated-doc, .annotated-detail-box { max-height: none; height: auto; min-height: 320px; }
       }
-      table { border-collapse: collapse; width: 100%; font-size: 14px; }
-      th, td { border: 1px solid #eee; padding: 8px; vertical-align: top; font-size: 14px; }
-      th { background: #f8fafc; position: sticky; top: 0; font-weight: 600; }
-      .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ccc; }
-      .high { background: #ffe5e5; border-color: #ffb3b3; }
-      .medium { background: #fff0d6; border-color: #ffd399; }
-      .low { background: #e9f6ff; border-color: #b3dcff; }
-      pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px; margin: 0; }
+      @media (max-width: 640px) {
+        #howSection .steps { grid-template-columns: 1fr; }
+        .top-nav { flex-wrap: wrap; }
+        .top-nav-links { flex-wrap: wrap; }
+        .row-between { flex-wrap: wrap; }
+        .form-grid.form-row { flex-wrap: wrap; }
+      }
+    
+      .btn{
+        min-height: 44px;
+        height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .hero-actions .btn{
+        min-width: 220px;
+        flex: 1 1 260px;
+        max-width: 360px;
+      }
+      .form-grid{ align-items: stretch; }
+      .field{ height: 100%; }
+
     </style>
   </head>
   <body>
-    <div id="loginStatus" style="position: fixed; top: 16px; right: 16px; z-index: 100; display: none; align-items: center; gap: 12px; background: rgba(15, 23, 42, 0.9); padding: 8px 16px; border-radius: 8px; backdrop-filter: blur(8px);">
-      <span id="loginStatusText" style="color: #fff; font-size: 14px;"></span>
-      <button id="logoutBtn" class="btn ghost" style="padding: 6px 12px; font-size: 13px;">Logout</button>
+    <nav class="top-nav" id="topNav">
+      <div class="top-nav-links">
+        <a href="#" id="navHome" onclick="return showHero(event);">Home</a>
+        <a href="#analyze" id="navCheck" onclick="return goAnalyze(event);">Check my contract</a>
+        <a href="#analyze" id="navExample" onclick="return runExampleJob(event);">Try example contract</a>
+        <a href="#how" id="navHow" onclick="return showHow(event);">How it works</a>
+        <a href="#settings" id="navSettings" onclick="return showSettings(event);">Settings</a>
+      </div>
+      <div class="top-nav-right">
+        <button id="loginBtn" type="button" class="btn ghost" style="padding: 8px 16px; font-size: 14px;" onclick="return openLoginModal(event);">Sign In</button>
+        <div id="loginStatus" style="display: none; align-items: center; gap: 12px;">
+          <span id="loginStatusText" style="color: #fff; font-size: 14px;"></span>
+          <button id="logoutBtn" class="btn ghost" style="padding: 6px 12px; font-size: 13px;">Logout</button>
+        </div>
+      </div>
+    </nav>
+    <div id="loginModal" class="hidden login-modal-backdrop" style="display: none;" data-modal-backdrop="true">
+      <div class="login-modal-card" style="position: relative; z-index: 1001;" data-modal-content="true">
+        <h3>Login</h3>
+        <form id="loginForm" onsubmit="return handleLoginSubmit(event);">
+          <div class="field" style="margin-bottom: 18px;">
+            <input id="loginUsername" type="text" placeholder="Username" required />
+          </div>
+          <div class="field" style="margin-bottom: 22px;">
+            <input id="loginPassword" type="password" placeholder="Password" required />
+          </div>
+          <div class="actions" style="justify-content: center; gap: 12px;">
+            <button type="submit" class="btn primary">Login</button>
+            <button type="button" id="loginCancelBtn" class="btn secondary" onclick="return closeLoginModal(event);">Cancel</button>
+          </div>
+        </form>
+        <div id="loginError" class="notice warn hidden" style="margin-top: 16px;"></div>
+      </div>
     </div>
+
+    <div id="apiKeyModal" class="hidden login-modal-backdrop" style="display: none;" data-modal-backdrop="true">
+      <div class="login-modal-card" style="position: relative; z-index: 1001;" data-modal-content="true">
+        <h3>Enter your key to proceed</h3>
+        <form id="apiKeyModalForm">
+          <div class="field" style="margin-bottom: 18px;">
+            <input id="apiKeyModalInput" type="password" placeholder="Paste API key here" required />
+          </div>
+          <div class="actions" style="justify-content: center; gap: 12px;">
+            <button type="submit" class="btn primary">Use key</button>
+            <button type="button" class="btn secondary" onclick="return closeApiKeyModal(event);">Cancel</button>
+          </div>
+        </form>
+        <div class="muted" style="margin-top: 12px; font-size: 12px;">Key is sent only for processing.</div>
+      </div>
+    </div>
+
     <header class="hero" id="hero">
-      <div class="container hero-inner">
+      <div class="hero-inner">
         <div class="hero-copy">
-          <div class="eyebrow">Contract review</div>
-          <h1>Analyze your legal contracts and find unfair clauses</h1>
+          <h1>Your personal AI that reviews your legal contracts</h1>
           <div class="hero-actions">
-            <button id="ctaBtn" class="btn primary hero-main">Check my document</button>
-            <button id="exampleBtn" class="btn ghost">Try example contract</button>
-            <button id="settingsBtn" class="btn ghost">Settings</button>
-            <button id="loginBtn" class="btn ghost">Login (optional)</button>
-            <a class="btn ghost" href="#how">How it works</a>
+            <button id="startBtn" type="button" class="btn hero-start" onclick="return goAnalyze(event);">Check my contract</button>
+            <button id="tryExampleBtn" type="button" class="btn hero-demo" onclick="return runExampleJob(event);">Try example</button>
           </div>
         </div>
       </div>
     </header>
 
-    <div id="loginModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;" data-modal-backdrop="true">
-      <div class="card" style="max-width: 400px; width: 90%; position: relative; z-index: 1001;" data-modal-content="true">
-        <h3>Login (Optional)</h3>
-        <p class="muted" style="margin-bottom: 16px;">Login to use demo account with pre-configured API key.</p>
-        <form id="loginForm">
-          <div class="field">
-            <label for="loginUsername">Username</label>
-            <input id="loginUsername" type="text" placeholder="Enter username" required />
-          </div>
-          <div class="field">
-            <label for="loginPassword">Password</label>
-            <input id="loginPassword" type="password" placeholder="Enter password" required />
-          </div>
-          <div class="actions">
-            <button type="submit" class="btn primary">Login</button>
-            <button type="button" id="loginCancelBtn" class="btn secondary">Cancel</button>
-          </div>
-        </form>
-        <div id="loginError" class="notice warn hidden" style="margin-top: 12px;"></div>
-      </div>
-    </div>
 
-    <section id="how" class="section">
-      <div class="container">
-        <div class="section-header">
-          <h2>How it works</h2>
-          <p class="muted">We use machine learning models to detect unfair clauses.</p>
-        </div>
+    <main id="howSection" class="section hidden" style="min-height: 100vh; background: #000; color: #fff; padding: 56px 24px;">
+      <div class="container" style="max-width: 920px; text-align: center;">
+        <h2 style="font-size: 2rem; margin-bottom: 12px; color: #fff; font-weight: 600;">How it works</h2>
+        <p class="muted" style="margin-bottom: 48px; color: rgba(255,255,255,0.75); font-size: 15px;">We use machine learning models to detect unfair clauses.</p>
         <div class="steps">
           <div class="card">
             <div class="step-num">1</div>
             <h4>Upload</h4>
-            <p class="muted">Choose a PDF and set your API key and model.</p>
+            <p class="muted">Upload your contract and set your API key and model.</p>
           </div>
           <div class="card">
             <div class="step-num">2</div>
@@ -180,11 +464,11 @@
           <div class="card">
             <div class="step-num">3</div>
             <h4>Review</h4>
-            <p class="muted">Get evidence-backed findings and export JSON.</p>
+            <p class="muted">Get evidence-backed findings and export findings.</p>
           </div>
         </div>
       </div>
-    </section>
+    </main>
 
     <main id="settingsSection" class="section hidden">
       <div class="container">
@@ -193,7 +477,6 @@
             <h2>Settings</h2>
             <p class="muted">Save your API credentials and preferences.</p>
           </div>
-          <button id="settingsBackBtn" class="btn ghost dark">Back</button>
         </div>
 
         <div class="card">
@@ -207,24 +490,24 @@
                   <option value="openai">OpenAI</option>
                 </select>
               </div>
-              <div class="field full">
-                <label for="settingsApiKey">API key</label>
-                <input id="settingsApiKey" name="api_key" type="password" placeholder="Paste your API key here" />
-                <div style="margin-top: 8px;">
-                  <label style="display: flex; gap: 8px; align-items: flex-start; cursor: pointer;">
-                    <input type="checkbox" id="settingsRememberKey" checked style="width: auto; margin-top: 2px;" />
-                    <span style="font-size: 13px; color: var(--muted);">Remember API key in browser (localStorage)</span>
-                  </label>
-                </div>
-              </div>
               <div class="field full" id="settingsBaseUrlBox">
                 <label for="settingsBaseUrl">Base URL (Nebius)</label>
                 <input id="settingsBaseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" />
               </div>
+              <div class="field full">
+                <label for="settingsApiKey">API key</label>
+                <input id="settingsApiKey" name="api_key" type="password" placeholder="Paste your API key here" />
+                <div style="margin-top: 8px;">
+                  <label style="display: flex; gap: 8px; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="settingsRememberKey" checked style="width: auto; margin-top: 0;" />
+                    <span style="font-size: 13px; color: var(--muted); line-height: 1.5;">Remember API key in browser (localStorage)</span>
+                  </label>
+                </div>
+              </div>
             </div>
 
             <div class="actions">
-              <button type="submit" class="btn primary">Save Settings</button>
+              <button type="button" class="btn primary" onclick="return handleSettingsSave(event);">Save Settings</button>
               <button type="button" id="clearSettingsBtn" class="btn secondary">Clear Saved Settings</button>
             </div>
           </form>
@@ -239,72 +522,98 @@
       <div class="container">
         <div class="section-header row-between">
           <div>
-            <h2>Check a document</h2>
-            <p class="muted">Enter your credentials, choose a model, and upload a PDF.</p>
+            <h2>Check my contract</h2>
+            <p class="muted">Enter your credentials, choose a model, and upload a PDF or enter contract text manually.</p>
           </div>
-          <button id="backBtn" class="btn ghost dark">Back</button>
         </div>
 
         <div class="card">
           <h3>Analysis settings</h3>
-          <form id="uploadForm">
-            <div class="form-grid">
-              <div class="field">
-                <label for="provider">Provider</label>
-                <select id="provider" name="provider">
-                  <option value="nebius" selected>Nebius (TokenFactory)</option>
-                  <option value="openai">OpenAI</option>
-                </select>
+          <form id="uploadForm" novalidate>
+            <div class="form-grid" style="align-items: flex-start;">
+              <div class="field" style="flex: 1 1 300px;">
+                <label for="pdfFile">Upload PDF</label>
+                <input type="file" id="pdfFile" name="file" accept="application/pdf" />
+                <div id="fileInfo" style="margin-top: 8px; font-size: 13px; color: var(--muted); line-height: 1.5; display: none;"></div>
+              <button id="clearFileBtn" type="button" class="btn secondary" style="margin-top: 10px; padding: 8px 12px; font-size: 12px;" onclick="return clearSelectedFile(event);">Delete file</button>
               </div>
-              <div class="field">
-                <label for="model">Model</label>
-                <select id="model" name="model"></select>
+              <div style="display: flex; align-items: center; justify-content: center; padding-top: 32px; padding-left: 16px; padding-right: 16px; font-weight: 600; color: var(--muted); font-size: 14px; min-width: 60px;">
+                OR
               </div>
-              <div class="field full">
-                <label for="modelCustom">Custom model (optional)</label>
-                <input id="modelCustom" type="text" placeholder="(optional) override selected model" />
+              <div class="field" style="flex: 1 1 300px;">
+                <label for="contractText">Enter manually</label>
+                <textarea id="contractText" name="contract_text" placeholder="type your contract here" style="min-height: 200px;"></textarea>
               </div>
             </div>
 
-            <div class="form-grid">
-              <div class="field full">
+            <p class="muted" style="margin-top: 10px; font-size: 12px;">Note: If both a PDF and manual text are provided, the PDF will be analyzed.</p>
+
+            <div class="actions">
+              <button id="processBtn" type="button" class="btn primary" onclick="return handleFormSubmit(event);">Process</button>
+              <button id="cancelBtn" type="button" class="btn secondary" disabled onclick="return handleCancel(event);">Stop</button>
+            </div>
+
+            <details style="margin-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+              <summary style="cursor: pointer; font-weight: 600; color: #fff; list-style: none;">
+                Advanced settings
+                <span style="font-size: 12px; color: var(--muted); margin-left: 8px;">Click to expand</span>
+              </summary>
+              <div style="margin-top: 12px;">
+                <div class="form-grid" style="gap: 16px;">
+                  <div class="field" id="apiKeyField" style="flex: 2 1 420px;">
                 <label for="apiKey">API key</label>
                 <input id="apiKey" name="api_key" type="password" placeholder="Paste key here (or login as demo to use server key)" />
-                <p class="muted" style="font-size: 12px; margin-top: 4px;">
+                    <div id="apiKeyError" class="error-text" style="display: none;">Enter API key to run analysis.</div>
+                    <p class="muted" style="font-size: 12px; margin-top: 6px; line-height: 1.5;">
                   Key is sent to server for processing only (not stored on server). 
                   Use Settings to optionally save it in your browser.
                   <span id="demoKeyNotice" style="display: none; color: var(--accent); font-weight: 600;"> Using demo account - server API key will be used.</span>
                 </p>
               </div>
-              <div class="field full" id="baseUrlBox">
-                <label for="baseUrl">Base URL (Nebius)</label>
-                <input id="baseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" />
+                  <div class="field" id="modelField" style="flex: 1 1 230px;">
+                    <label for="model">Model</label>
+                    <select id="model" name="model" class="select-compact">
+                      <option value="Qwen/Qwen3-30B-A3B-Thinking-2507" selected>Qwen/Qwen3-30B-A3B-Thinking-2507</option>
+                      <option value="openai/gpt-oss-20b">openai/gpt-oss-20b</option>
+                      <option value="Qwen/Qwen2-7B-Instruct">Qwen/Qwen2-7B-Instruct</option>
+                    </select>
+                    <div id="modelError" class="error-text" style="display: none;">Select a model or enter a custom one.</div>
+              </div>
+                </div>
+                <div class="form-grid" style="gap: 14px; align-items: flex-start;">
+                  <div class="field" style="flex: 1 1 240px;">
+                    <label for="modelCustom">Custom model (optional)</label>
+                    <input id="modelCustom" type="text" placeholder="(optional) override selected model" />
+                  </div>
+                  <div class="field" style="flex: 1 1 200px; max-width: 230px;">
+                <label for="provider">Provider</label>
+                    <select id="provider" name="provider" class="select-compact">
+                  <option value="nebius" selected>Nebius (TokenFactory)</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+                  <div class="field" style="flex: 2 1 320px;">
+                    <label for="baseUrl">Base URL (Nebius)</label>
+                    <input id="baseUrl" name="base_url" type="text" value="https://api.tokenfactory.nebius.com/v1/" />
               </div>
             </div>
 
-            <div style="margin-bottom:12px;">
+                <div style="margin-bottom: 10px; display:flex; flex-direction:column; gap:4px;">
               <label class="debug-toggle">
                 <input id="enableDebugParagraph" type="checkbox" />
                 <span>Debug per paragraph</span>
               </label>
-              <label class="debug-toggle" style="margin-top:6px;">
+                  <label class="debug-toggle">
                 <input id="enableDebugWindow" type="checkbox" />
                 <span>Full LLM debug</span>
               </label>
+                  <label class="debug-toggle">
+                <input id="enableLegacySingle" type="checkbox" />
+                <span>Use legacy single-step mode</span>
+              </label>
             </div>
-
-            <div class="form-grid">
-              <div class="field full">
-                <label for="pdfFile">Upload PDF</label>
-                <input type="file" id="pdfFile" name="file" accept="application/pdf" required />
-                <div id="fileInfo" style="margin-top: 6px; font-size: 13px; color: var(--muted); display: none;"></div>
               </div>
-            </div>
-
-            <div class="actions">
-              <button type="submit" class="btn primary">Process</button>
-              <button id="cancelBtn" type="button" class="btn secondary" disabled>Stop</button>
-            </div>
+            </details>
           </form>
 
           <div id="statusBanner" class="status hidden">
@@ -338,8 +647,8 @@
         <div id="result" class="card" style="display:none; margin-top: 24px;">
           <h3>Findings</h3>
           <div id="fairNotice" class="notice success" style="display:none; text-align: center; padding: 32px;">
-            <div class="title" style="font-size: 24px; margin-bottom: 12px;">Your document looks fair!</div>
-            <div>Still, consider a human review for high-stakes agreements since AI may make errors.</div>
+            <div class="title" style="font-size: 24px; margin-bottom: 12px;">No red flags detected by the selected mode.</div>
+            <div>AI can make mistakes. Please review important clauses carefully or consult a legal professional.</div>
           </div>
           <div id="unfairNotice" class="notice warn" style="display:none;">
             <div class="title">We found clauses that look unfair.</div>
@@ -347,7 +656,7 @@
           </div>
           <div id="annotatedView" style="display:none; margin-top: 16px;">
             <div style="margin-bottom: 12px;">
-              <button id="nextClauseBtnInline" class="btn" style="display:none; padding: 8px 16px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">Move to next unfair clause</button>
+              <button id="nextClauseBtnInline" class="btn primary" style="display:none; padding: 10px 18px; font-size: 14px;">Move to next unfair clause</button>
             </div>
             <div class="annotated-split">
               <div class="card annotated-doc" id="annotatedDocBox"></div>
@@ -378,6 +687,10 @@
               <div id="clauseRevisionExplanation" class="value" style="white-space: pre-wrap;"></div>
             </div>
           </div>
+          <div style="margin-top: 16px; margin-bottom: 12px; display: flex; gap: 12px;">
+            <button id="downloadResultsBtn" type="button" class="btn primary" style="display:none;" onclick="downloadResultsAsExcel()">Download Results (Excel)</button>
+            <button id="downloadAnnotatedPdfBtn" type="button" class="btn secondary" style="display:none;" onclick="downloadAnnotatedPdf()">Download Annotated PDF</button>
+          </div>
           <div style="max-height: 560px; overflow: auto; margin-top: 24px;">
             <table id="findingsTable">
               <thead>
@@ -396,7 +709,7 @@
           </div>
           <div id="rawText" style="margin-top: 16px; display: none;">
             <h4>Raw result (JSON)</h4>
-            <pre id="rawTextContent" style="max-height: 400px; overflow: auto; font-size: 12px; background: #f8fafc; padding: 12px; border-radius: 8px;"></pre>
+            <pre id="rawTextContent" style="max-height: 400px; overflow: auto; font-size: 12px; background: var(--card); padding: 12px; border-radius: 8px; color: var(--ink);"></pre>
           </div>
 
           <div id="debug" style="display:none; margin-top: 24px;">
@@ -404,16 +717,20 @@
             <p class="muted">Enabled only if you checked <b>Debug per paragraph</b> and/or <b>Full LLM debug</b> before upload. This may include document text.</p>
             <div id="debugTraces"></div>
             <div id="debugWindows" style="margin-top:16px;"></div>
+            <div id="debugMinimal" style="margin-top:16px;"></div>
           </div>
         </div>
       </div>
     </main>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script>
       let currentJobId = null;
       let pollTimer = null;
       let activeHighlightId = null;
+      let currentResult = null;
+      let isExampleContract = false;
 
       function el(id) { return document.getElementById(id); }
 
@@ -589,55 +906,95 @@
         const hero = el("hero");
         const analyze = el("analyzeSection");
         const settings = el("settingsSection");
-        const how = el("how");
+        const howSection = el("howSection");
         if (hero) hero.style.display = "none";
-        if (how) how.classList.add("hidden");
+        if (howSection) howSection.classList.add("hidden");
         if (settings) settings.classList.add("hidden");
         if (analyze) analyze.classList.remove("hidden");
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
 
-      function showSettings() {
+      function showSettings(ev) {
+        if (ev) ev.preventDefault();
         const hero = el("hero");
         const analyze = el("analyzeSection");
         const settings = el("settingsSection");
-        const how = el("how");
+        const howSection = el("howSection");
         if (hero) hero.style.display = "none";
-        if (how) how.classList.add("hidden");
+        if (howSection) howSection.classList.add("hidden");
         if (analyze) analyze.classList.add("hidden");
         if (settings) settings.classList.remove("hidden");
         loadSettings();
         window.scrollTo({ top: 0, behavior: "smooth" });
+        return false;
       }
 
-      function showHero() {
+      function showHow(ev) {
+        if (ev) ev.preventDefault();
         const hero = el("hero");
         const analyze = el("analyzeSection");
         const settings = el("settingsSection");
-        const how = el("how");
-        if (hero) hero.style.display = "block";
-        if (how) how.classList.remove("hidden");
+        const howSection = el("howSection");
+        if (hero) hero.style.display = "none";
+        if (analyze) analyze.classList.add("hidden");
+        if (settings) settings.classList.add("hidden");
+        if (howSection) howSection.classList.remove("hidden");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return false;
+      }
+
+      function showHero(ev) {
+        if (ev) ev.preventDefault();
+        const hero = el("hero");
+        const analyze = el("analyzeSection");
+        const settings = el("settingsSection");
+        const howSection = el("howSection");
+        if (hero) hero.style.display = "flex";
+        if (howSection) howSection.classList.add("hidden");
         if (analyze) analyze.classList.add("hidden");
         if (settings) settings.classList.add("hidden");
         window.scrollTo({ top: 0, behavior: "smooth" });
+        return false;
       }
 
       // Settings management
       function saveSettings() {
         const rememberKey = el("settingsRememberKey").checked;
+        const settingsApiKey = el("settingsApiKey").value;
         const settings = {
           provider: el("settingsProvider").value,
-          apiKey: rememberKey ? el("settingsApiKey").value : "",
+          apiKey: rememberKey ? settingsApiKey : "",
           baseUrl: el("settingsBaseUrl").value,
           rememberKey: rememberKey,
         };
+        let ok = true;
         try {
           localStorage.setItem("contract_analyzer_settings", JSON.stringify(settings));
-          return true;
         } catch (e) {
-          console.error("Failed to save settings:", e);
-          return false;
+          console.warn("localStorage save failed:", e);
+          ok = false;
         }
+        try {
+          // Keep API key in session for this browser session even if not remembered
+          if (settingsApiKey) {
+            sessionStorage.setItem("contract_analyzer_api_key_session", settingsApiKey);
+          } else {
+            sessionStorage.removeItem("contract_analyzer_api_key_session");
+          }
+        } catch (e) {
+          console.warn("sessionStorage save failed:", e);
+          ok = false;
+        }
+        // Always mirror the current settings API key into the analyze form on save
+        // (even if not persisted, so the user sees it immediately).
+        if (settingsApiKey) {
+          el("apiKey").value = settingsApiKey;
+        }
+        if (settings.provider) el("provider").value = settings.provider;
+        if (settings.baseUrl) el("baseUrl").value = settings.baseUrl;
+        updateProviderUI();
+        // If both storages failed, report failure. Otherwise show success.
+        return ok || !!settingsApiKey || !!settings.provider || !!settings.baseUrl;
       }
 
       function loadSettings() {
@@ -668,9 +1025,20 @@
           if (saved) {
             const settings = JSON.parse(saved);
             if (settings.provider) el("provider").value = settings.provider;
-            // Only load API key if user chose to remember it
-            if (settings.rememberKey && settings.apiKey) {
+            // Prefer session key, then remembered key
+            const sessionKey = sessionStorage.getItem("contract_analyzer_api_key_session") || "";
+            if (sessionKey) {
+              el("apiKey").value = sessionKey;
+            } else if (settings.rememberKey && settings.apiKey) {
               el("apiKey").value = settings.apiKey;
+            } else {
+              const liveSettingsKey = (el("settingsApiKey")?.value || "").trim();
+              if (liveSettingsKey) {
+                el("apiKey").value = liveSettingsKey;
+                sessionStorage.setItem("contract_analyzer_api_key_session", liveSettingsKey);
+              } else {
+                el("apiKey").value = "";
+              }
             }
             if (settings.baseUrl) el("baseUrl").value = settings.baseUrl;
             
@@ -685,6 +1053,7 @@
       function clearSettings() {
         try {
           localStorage.removeItem("contract_analyzer_settings");
+          sessionStorage.removeItem("contract_analyzer_api_key_session");
           el("settingsProvider").value = "nebius";
           el("settingsApiKey").value = "";
           el("settingsBaseUrl").value = "https://api.tokenfactory.nebius.com/v1/";
@@ -723,6 +1092,9 @@
         } catch (e) {
           console.error("Failed to load auth info:", e);
         }
+        if (window.__authInfo) {
+          return window.__authInfo;
+        }
         return null;
       }
 
@@ -732,6 +1104,34 @@
         } catch (e) {
           console.error("Failed to save auth info:", e);
         }
+        window.__authInfo = authInfo;
+      }
+
+      function getEffectiveApiKey() {
+        const direct = (el("apiKey")?.value || "").trim();
+        if (direct) return direct;
+        const settingsVal = (el("settingsApiKey")?.value || "").trim();
+        if (settingsVal) return settingsVal;
+        try {
+          const sessionKey = sessionStorage.getItem("contract_analyzer_api_key_session") || "";
+          if (sessionKey.trim()) return sessionKey.trim();
+        } catch (e) {
+          console.error("Failed to read sessionStorage for API key:", e);
+        }
+        try {
+          const saved = localStorage.getItem("contract_analyzer_settings");
+          if (saved) {
+            const settings = JSON.parse(saved);
+            if (settings?.rememberKey && settings?.apiKey) return String(settings.apiKey || "").trim();
+          }
+        } catch (e) {
+          console.error("Failed to read settings for API key:", e);
+        }
+        return "";
+      }
+
+      function getAnalysisMode() {
+        return "windowed";
       }
 
       function clearAuthInfo() {
@@ -741,6 +1141,7 @@
         } catch (e) {
           console.error("Failed to clear auth info:", e);
         }
+        window.__authInfo = null;
       }
       
       // Helper function to clear auth (can be called from browser console)
@@ -752,13 +1153,16 @@
       function updateLoginStatus() {
         const authInfo = getAuthInfo();
         const loginStatus = el("loginStatus");
+        const loginBtn = el("loginBtn");
         const loginStatusText = el("loginStatusText");
         const demoKeyNotice = el("demoKeyNotice");
         
         if (authInfo && authInfo.success) {
-          if (loginStatus) loginStatus.style.display = "flex";
-          if (loginStatusText) {
-            loginStatusText.textContent = `Logged in as: ${authInfo.username}`;
+          if (loginStatus) loginStatus.style.display = "none";
+          if (loginBtn) {
+            loginBtn.style.display = "inline-block";
+            loginBtn.textContent = `Logged in as: ${authInfo.username}`;
+            loginBtn.dataset.loggedIn = "1";
           }
           if (authInfo.is_demo && demoKeyNotice) {
             demoKeyNotice.style.display = "inline";
@@ -769,6 +1173,11 @@
           }
         } else {
           if (loginStatus) loginStatus.style.display = "none";
+          if (loginBtn) {
+            loginBtn.style.display = "inline-block";
+            loginBtn.textContent = "Sign In";
+            loginBtn.dataset.loggedIn = "0";
+          }
           if (demoKeyNotice) demoKeyNotice.style.display = "none";
           el("apiKey").placeholder = "Paste key here (or login as demo to use server key)";
         }
@@ -778,25 +1187,60 @@
         const fd = new FormData();
         fd.append("file", file);
         const provider = (el("provider")?.value || "nebius");
-        const apiKey = (el("apiKey")?.value || "");
+        const apiKey = getEffectiveApiKey();
         const baseUrl = (el("baseUrl")?.value || "");
         const modelSel = (el("model")?.value || "");
         const modelCustom = (el("modelCustom")?.value || "");
         const model = modelCustom.trim() ? modelCustom.trim() : modelSel;
-        
         const authInfo = getAuthInfo();
         const useDemoKey = authInfo && authInfo.success && authInfo.is_demo ? "1" : "0";
-        
         fd.append("provider", provider);
         fd.append("api_key", apiKey);
         fd.append("base_url", baseUrl);
         fd.append("model", model);
         fd.append("use_demo_key", useDemoKey);
-        fd.append("enable_debug_paragraph", el("enableDebugParagraph")?.checked ? "1" : "0");
-        fd.append("enable_debug_window", el("enableDebugWindow")?.checked ? "1" : "0");
-        const res = await fetch("/upload", { method: "POST", body: fd });
+        const debugParagraphEnabled = el("enableDebugParagraph")?.checked ? "1" : "0";
+        const debugWindowEnabled = el("enableDebugWindow")?.checked ? "1" : "0";
+        const useLegacySingle = el("enableLegacySingle")?.checked ? "1" : "0";
+        const analysisMode = getAnalysisMode();
+        console.log(
+          "Debug checkboxes - paragraph:",
+          debugParagraphEnabled,
+          "window:",
+          debugWindowEnabled,
+          "legacy_single:",
+          useLegacySingle
+        );
+        fd.append("enable_debug_paragraph", debugParagraphEnabled);
+        fd.append("enable_debug_window", debugWindowEnabled);
+        fd.append("mode", useLegacySingle === "1" ? "single_legacy" : "uk_two_stage");
+        fd.append("analysis_mode", analysisMode);
+        const res = await fetch("/upload", { method: "POST", body: fd, credentials: "include" });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
+        return data;
+      }
+
+      async function uploadExampleContract() {
+        const fd = new FormData();
+        const provider = (el("provider")?.value || "nebius");
+        const apiKey = (el("apiKey")?.value || "");
+        const baseUrl = (el("baseUrl")?.value || "");
+        const modelSel = (el("model")?.value || "");
+        const modelCustom = (el("modelCustom")?.value || "");
+        const model = modelCustom.trim() ? modelCustom.trim() : modelSel;
+        const authInfo = getAuthInfo();
+        const useDemoKey = authInfo && authInfo.success && authInfo.is_demo ? "1" : "0";
+        fd.append("provider", provider);
+        fd.append("api_key", apiKey);
+        fd.append("base_url", baseUrl);
+        fd.append("model", model);
+        fd.append("use_demo_key", useDemoKey);
+        const useLegacySingle = el("enableLegacySingle")?.checked ? "1" : "0";
+        fd.append("mode", useLegacySingle === "1" ? "single_legacy" : "uk_two_stage");
+        const res = await fetch("/upload-example", { method: "POST", body: fd, credentials: "include" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Example upload failed");
         return data;
       }
 
@@ -899,6 +1343,7 @@
 
       function renderResult(result) {
         el("result").style.display = "block";
+        currentResult = result;
 
         const tbody = el("findingsTable").querySelector("tbody");
         tbody.innerHTML = "";
@@ -908,9 +1353,25 @@
         el("unfairNotice").style.display = hasFindings ? "block" : "none";
         el("findingsTable").style.display = hasFindings ? "table" : "none";
         el("annotatedView").style.display = hasFindings ? "block" : "none";
+        el("downloadResultsBtn").style.display = hasFindings ? "inline-block" : "none";
+        el("downloadAnnotatedPdfBtn").style.display = hasFindings ? "inline-block" : "none";
         if (hasFindings) {
           setClauseHeader(null);
           renderAnnotatedView(currentJobId, findings);
+
+          // Show annotated split-view in the main split container (works for both PDF and manual text).
+          const splitEl = el("splitView");
+          const annotatedEl = el("annotatedView");
+          if (splitEl && annotatedEl) {
+            splitEl.classList.remove("hidden");
+            splitEl.style.display = "block";
+            // Replace PDF-render split content with annotated view
+            if (annotatedEl.parentElement !== splitEl) {
+              splitEl.innerHTML = "";
+              splitEl.appendChild(annotatedEl);
+            }
+          }
+
         }
         
         if (!hasFindings) {
@@ -934,22 +1395,33 @@
           `;
           tbody.appendChild(tr);
         }
+        const traces = result?.meta?.debug?.paragraph_traces || null;
+        const windows = result?.meta?.debug?.window_traces || null;
+        const failedWindows = result?.meta?.debug?.failed_windows || null;
+        const hasDebug = !!result?.meta?.debug;
+        
+        console.log("Debug data received - hasDebug:", hasDebug, "traces count:", traces?.length || 0, "windows count:", windows?.length || 0);
+        
         const rawBox = el("rawText");
         const rawContent = el("rawTextContent");
-        if (rawBox && rawContent && hasFindings) {
+        if (rawBox && rawContent && hasFindings && hasDebug) {
           rawBox.style.display = "block";
           rawContent.textContent = JSON.stringify(result, null, 2);
         } else if (rawBox) {
           rawBox.style.display = "none";
         }
-
-        const traces = result?.meta?.debug?.paragraph_traces || null;
-        const windows = result?.meta?.debug?.window_traces || null;
         const dbg = el("debug");
         const dbgBox = el("debugTraces");
         const dbgWin = el("debugWindows");
+        const dbgMin = el("debugMinimal");
+        
+        if (!dbg) {
+          console.error("Debug element not found!");
+        }
         if (Array.isArray(traces) && traces.length) {
-          dbg.style.display = "block";
+          console.log("Displaying paragraph traces:", traces.length);
+          if (dbg) dbg.style.display = "block";
+          if (dbgBox) {
           dbgBox.innerHTML = "";
           for (const t of traces) {
             const details = document.createElement("details");
@@ -992,17 +1464,31 @@
               </div>
             `;
             dbgBox.appendChild(details);
+            }
           }
         } else {
-          dbgBox.innerHTML = "";
+          if (dbgBox) dbgBox.innerHTML = "";
         }
 
         if (Array.isArray(windows) && windows.length) {
-          dbg.style.display = "block";
+          console.log("Displaying window traces:", windows.length);
+          if (dbg) dbg.style.display = "block";
+          if (dbgWin) {
           dbgWin.innerHTML = "<h3>Debug traces (per window)</h3>";
           for (const w of windows) {
             const d = document.createElement("details");
             d.style.margin = "10px 0";
+            const router = w.router || null;
+            const routerHtml = router ? `
+                <div style="margin-top: 8px;"><b>Router prompt (system)</b></div>
+                <pre>${escapeHtml(router.system || "")}</pre>
+                <div><b>Router prompt (user)</b></div>
+                <pre>${escapeHtml(router.user || "")}</pre>
+                <div><b>Router parsed</b></div>
+                <pre>${escapeHtml(JSON.stringify(router.parsed || {}, null, 2))}</pre>
+                <div><b>Router raw</b></div>
+                <pre>${escapeHtml(router.raw || "")}</pre>
+            ` : "";
             d.innerHTML = `
               <summary>${escapeHtml(w.window_id || "")} — ${escapeHtml(w.section_path || "")} — paragraphs=${escapeHtml(JSON.stringify(w.paragraph_indices || []))}</summary>
               <div style="margin-top: 8px;">
@@ -1017,15 +1503,71 @@
                 <pre>${escapeHtml(w.prompt_user_tail || "")}</pre>
                 <div><b>Raw output</b></div>
                 <pre>${escapeHtml(w.raw_output || "")}</pre>
+                ${routerHtml}
               </div>
             `;
             dbgWin.appendChild(d);
+            }
           }
         } else {
-          dbgWin.innerHTML = "";
+          if (dbgWin) dbgWin.innerHTML = "";
           if (!(Array.isArray(traces) && traces.length)) {
-            dbg.style.display = "none";
+            if (dbg) dbg.style.display = "none";
           }
+        }
+
+        if (dbgMin) dbgMin.innerHTML = "";
+        if (Array.isArray(windows) && windows.length && dbgMin) {
+          const blocks = windows.map((w, idx) => {
+            const repairs = Array.isArray(w.quote_repairs) ? w.quote_repairs : [];
+            const finals = Array.isArray(w.final_findings) ? w.final_findings : [];
+            const repairText = repairs.length
+              ? repairs.map(r => {
+                  const ok = r.matched ? "matched" : "no match";
+                  const err = r.error ? `, error: ${escapeHtml(r.error)}` : "";
+                  return `#${r.finding_index} ${r.category}: ${ok}${err}\n  original: ${escapeHtml(r.original_quote || "")}\n  repaired: ${escapeHtml(r.repaired_quote || "")}`;
+                }).join("\n")
+              : "(none)";
+            const finalText = finals.length
+              ? finals.map(f => `#${f.finding_index} ${f.category}\n  quote: ${escapeHtml(f.evidence_quote || "")}`).join("\n")
+              : "(none)";
+            return `
+              <div class="card" style="margin-bottom: 12px;">
+                <div style="font-weight:600; margin-bottom:6px;">Window ${idx + 1} · ${escapeHtml(w.window_id || "")}</div>
+                <div class="detail-field"><div class="label">Text chunk</div><pre class="value" style="white-space:pre-wrap;">${escapeHtml(w.text_chunk || "")}</pre></div>
+                <div class="detail-field"><div class="label">Model raw output</div><pre class="value" style="white-space:pre-wrap;">${escapeHtml(w.raw_output || "")}</pre></div>
+                <div class="detail-field"><div class="label">Quote repair</div><pre class="value" style="white-space:pre-wrap;">${repairText}</pre></div>
+                <div class="detail-field"><div class="label">Final findings</div><pre class="value" style="white-space:pre-wrap;">${finalText}</pre></div>
+              </div>
+            `;
+          }).join("");
+          dbgMin.innerHTML = `<h3>Minimal LLM debug</h3>${blocks}`;
+          if (dbg) dbg.style.display = "block";
+        }
+        
+        if (Array.isArray(failedWindows) && failedWindows.length) {
+          if (dbg) dbg.style.display = "block";
+          if (dbgWin) {
+            const header = dbgWin.innerHTML ? "<h3>Failed windows</h3>" : "<h3>Failed windows</h3>";
+            dbgWin.innerHTML += header;
+            for (const fw of failedWindows) {
+              const d = document.createElement("details");
+              d.style.margin = "10px 0";
+              d.innerHTML = `
+                <summary>${escapeHtml(fw.window_id || "")} — ${escapeHtml(fw.section_path || "")} — paragraphs=${escapeHtml(JSON.stringify(fw.paragraph_indices || []))}</summary>
+                <div style="margin-top: 8px;">
+                  <div><b>Error</b></div>
+                  <pre>${escapeHtml(fw.error || "")}</pre>
+                </div>
+              `;
+              dbgWin.appendChild(d);
+            }
+          }
+        }
+        
+        // Log final debug display state
+        if (dbg) {
+          console.log("Debug section display:", dbg.style.display, "has traces:", !!(traces && traces.length), "has windows:", !!(windows && windows.length));
         }
       }
 
@@ -1320,6 +1862,8 @@
           }
           
           docBox.innerHTML = "";
+          const highlightedFindings = new Set();
+          const matchedFindingIds = new Set();
           for (let i = 0; i < paragraphs.length; i++) {
             const p = paragraphs[i];
             const paraEl = document.createElement("div");
@@ -1433,6 +1977,26 @@
                 }
               } else {
                 ranges.push(...paraRanges);
+              }
+              if (paraRanges.length > 0) {
+                matchedFindingIds.add(findingId);
+              }
+            }
+
+            // If a finding wasn't matched by quote but has a paragraph location, highlight the full paragraph.
+            for (const f of findings) {
+              const fid = f.finding_id;
+              if (!fid || highlightedFindings.has(fid) || matchedFindingIds.has(fid)) continue;
+              const locIdx = f.location?.paragraph_index;
+              if (locIdx == null) continue;
+              if (locIdx === p.paragraph_index) {
+                ranges.push({ start: 0, end: (p.text || "").length, id: fid });
+              }
+            }
+            
+            if (ranges.length) {
+              for (const r of ranges) {
+                if (r?.id) highlightedFindings.add(r.id);
               }
             }
             
@@ -1570,12 +2134,14 @@
               el("cancelBtn").disabled = true;
               el("liveTrace").style.display = "none";
               el("liveTraceBox").innerHTML = "";
+              try { localStorage.removeItem("contract_analyzer_last_job_id"); } catch (e) {}
             }
             if (job.status === "failed" || job.status === "cancelled") {
               clearInterval(pollTimer);
               el("cancelBtn").disabled = true;
               el("liveTrace").style.display = "none";
               el("liveTraceBox").innerHTML = "";
+              try { localStorage.removeItem("contract_analyzer_last_job_id"); } catch (e) {}
             }
           } catch (e) {
             console.error(e);
@@ -1615,18 +2181,55 @@
         setModelOptions(p);
       }
 
+      const modelEl = el("model");
+      if (modelEl) {
+        modelEl.addEventListener("change", () => {
+          const modelField = el("modelField");
+          const modelError = el("modelError");
+          if (modelField) modelField.classList.remove("field-error");
+          if (modelError) modelError.style.display = "none";
+        });
+      }
+      const modelCustomEl = el("modelCustom");
+      if (modelCustomEl) {
+        modelCustomEl.addEventListener("input", () => {
+          const modelField = el("modelField");
+          const modelError = el("modelError");
+          if (modelField) modelField.classList.remove("field-error");
+          if (modelError) modelError.style.display = "none";
+        });
+      }
+
       el("provider").addEventListener("change", updateProviderUI);
       updateProviderUI();
 
-      // Show file name when user selects a file
-      el("pdfFile").addEventListener("change", (ev) => {
-        const fileInput = ev.target;
+      // Prevent form submission on Enter in textarea (allow Shift+Enter for new line)
+      const contractTextArea = el("contractText");
+      if (contractTextArea) {
+        contractTextArea.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" && !ev.shiftKey) {
+            // Don't prevent default - allow Enter to work normally in textarea
+            // But prevent form submission if user presses Enter while textarea is focused
+            // Actually, let Enter work in textarea, only prevent form submission on button click
+          }
+        });
+      }
+
+      function attachFileInputListener(fileInput) {
+        if (!fileInput) return;
+        fileInput.addEventListener("change", (ev) => {
+          const input = ev.target;
         const fileInfo = el("fileInfo");
-        if (fileInput.files && fileInput.files.length > 0) {
+          if (input.files && input.files.length > 0) {
           if (fileInfo) {
             fileInfo.style.display = "block";
             fileInfo.style.color = "var(--accent)";
-            fileInfo.innerHTML = `✓ File selected: <strong>${fileInput.files[0].name}</strong>`;
+              const fileName = input.files[0].name;
+              if (fileName === "example_contract.pdf") {
+                fileInfo.innerHTML = `✓ Example file selected: <strong>${fileName}</strong>`;
+              } else {
+                fileInfo.innerHTML = `✓ File selected: <strong>${fileName}</strong>`;
+              }
           }
         } else {
           if (fileInfo) {
@@ -1634,21 +2237,46 @@
           }
         }
       });
+      }
+      
+      // Show file name when user selects a file
+      attachFileInputListener(el("pdfFile"));
+      
+      function clearSelectedFile(ev) {
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        const fileInput = el("pdfFile");
+        const fileInfo = el("fileInfo");
+        if (fileInput && fileInput.parentNode) {
+          const newInput = fileInput.cloneNode(true);
+          fileInput.parentNode.replaceChild(newInput, fileInput);
+          attachFileInputListener(newInput);
+        }
+        if (fileInfo) fileInfo.style.display = "none";
+        isExampleContract = false;
+        return false;
+      }
+
 
       // Settings form handlers
       el("settingsProvider").addEventListener("change", updateSettingsProviderUI);
       updateSettingsProviderUI();
 
-      el("settingsForm").addEventListener("submit", (ev) => {
+      function handleSettingsSave(ev) {
+        if (ev) {
         ev.preventDefault();
+          ev.stopPropagation();
+        }
         if (saveSettings()) {
           const statusEl = el("settingsStatus");
           const titleEl = el("settingsStatusTitle");
           statusEl.classList.remove("hidden");
           titleEl.textContent = "Settings saved successfully!";
-          statusEl.style.background = "#ecfdf3";
-          statusEl.style.borderColor = "#bbf7d0";
-          statusEl.style.color = "#166534";
+          statusEl.style.background = "rgba(34, 197, 94, 0.15)";
+          statusEl.style.borderColor = "rgba(34, 197, 94, 0.4)";
+          statusEl.style.color = "#86efac";
           setTimeout(() => {
             statusEl.classList.add("hidden");
           }, 3000);
@@ -1657,11 +2285,15 @@
           const titleEl = el("settingsStatusTitle");
           statusEl.classList.remove("hidden");
           titleEl.textContent = "Failed to save settings. Please try again.";
-          statusEl.style.background = "#fef2f2";
-          statusEl.style.borderColor = "#fecaca";
-          statusEl.style.color = "#991b1b";
+          statusEl.style.background = "rgba(239, 68, 68, 0.15)";
+          statusEl.style.borderColor = "rgba(239, 68, 68, 0.5)";
+          statusEl.style.color = "#fca5a5";
         }
-      });
+        return false;
+      }
+
+      el("settingsForm").addEventListener("submit", handleSettingsSave, true);
+
 
       el("clearSettingsBtn").addEventListener("click", () => {
         if (confirm("Are you sure you want to clear all saved settings?")) {
@@ -1670,8 +2302,8 @@
             const titleEl = el("settingsStatusTitle");
             statusEl.classList.remove("hidden");
             titleEl.textContent = "Settings cleared.";
-            statusEl.style.background = "#f8fafc";
-            statusEl.style.borderColor = "#e5e7eb";
+            statusEl.style.background = "var(--card)";
+            statusEl.style.borderColor = "var(--border)";
             statusEl.style.color = "#64748b";
             setTimeout(() => {
               statusEl.classList.add("hidden");
@@ -1680,7 +2312,8 @@
         }
       });
 
-      function closeLoginModal() {
+      function closeLoginModal(ev) {
+        if (ev) ev.preventDefault();
         const modal = el("loginModal");
         if (modal) {
           modal.classList.add("hidden");
@@ -1696,10 +2329,35 @@
         const passwordEl = el("loginPassword");
         if (usernameEl) usernameEl.value = "";
         if (passwordEl) passwordEl.value = "";
+        return false;
       }
 
-      // Login handlers
-      el("loginBtn").addEventListener("click", () => {
+      function openApiKeyModal() {
+        const modal = el("apiKeyModal");
+        if (modal) {
+          modal.classList.remove("hidden");
+          modal.style.display = "flex";
+        }
+        const input = el("apiKeyModalInput");
+        if (input) {
+          input.value = "";
+          setTimeout(() => input.focus(), 50);
+        }
+        return false;
+      }
+
+      function closeApiKeyModal(ev) {
+        if (ev) ev.preventDefault();
+        const modal = el("apiKeyModal");
+        if (modal) {
+          modal.classList.add("hidden");
+          modal.style.display = "none";
+        }
+        return false;
+      }
+
+      function openLoginModal(ev) {
+        if (ev) ev.preventDefault();
         const modal = el("loginModal");
         if (modal) {
           modal.classList.remove("hidden");
@@ -1711,7 +2369,76 @@
           error.classList.add("hidden");
           error.innerHTML = "";
         }
-      });
+        return false;
+      }
+
+      function handleLoginButton(ev) {
+        if (ev) ev.preventDefault();
+        const authInfo = getAuthInfo();
+        if (authInfo && authInfo.success) {
+          if (confirm("Log out?")) {
+            clearAuthInfo();
+            updateLoginStatus();
+          }
+          return false;
+        }
+        return openLoginModal(ev);
+      }
+
+      async function handleLoginSubmit(ev) {
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        const username = el("loginUsername").value.trim();
+        const password = el("loginPassword").value.trim();
+        const errorEl = el("loginError");
+        try {
+          const fd = new FormData();
+          fd.append("username", username);
+          fd.append("password", password);
+          const res = await fetch("/auth/login", { method: "POST", body: fd });
+          const data = await res.json();
+          
+          if (res.ok && data.success) {
+            saveAuthInfo(data);
+            updateLoginStatus();
+            el("loginUsername").value = "";
+            el("loginPassword").value = "";
+            if (errorEl) errorEl.classList.add("hidden");
+            const modal = el("loginModal");
+            if (modal) {
+              modal.classList.add("hidden");
+              modal.style.display = "none";
+            }
+            if (data.is_demo) {
+              el("apiKey").value = "";
+            }
+          } else {
+            if (errorEl) {
+              errorEl.classList.remove("hidden");
+              errorEl.innerHTML = `<div class="title">Login failed</div><div>Invalid credentials, please try again.</div>`;
+            }
+          }
+        } catch (e) {
+          console.error("Login error:", e);
+          if (errorEl) {
+            errorEl.classList.remove("hidden");
+            errorEl.innerHTML = `<div class="title">Error</div><div>Failed to connect to server</div>`;
+          }
+        }
+        return false;
+      }
+
+      // Login handlers
+      const loginBtn = el("loginBtn");
+      if (loginBtn) {
+        loginBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          handleLoginButton(ev);
+        }, true);
+      }
       
       // Close modal when clicking on backdrop (outside the card)
       const loginModal = el("loginModal");
@@ -1735,88 +2462,228 @@
         console.warn("loginCancelBtn not found");
       }
 
-      el("logoutBtn").addEventListener("click", () => {
-        clearAuthInfo();
-        updateLoginStatus();
-      });
+      const logoutBtn = el("logoutBtn");
+      if (logoutBtn) {
+        logoutBtn.addEventListener("click", () => {
+          clearAuthInfo();
+          updateLoginStatus();
+        });
+      }
 
-      el("loginForm").addEventListener("submit", async (ev) => {
-        ev.preventDefault();
-        const username = el("loginUsername").value.trim();
-        const password = el("loginPassword").value.trim();
-        const errorEl = el("loginError");
-        
-        try {
-          const fd = new FormData();
-          fd.append("username", username);
-          fd.append("password", password);
-          const res = await fetch("/auth/login", { method: "POST", body: fd });
-          const data = await res.json();
-          
-          if (res.ok && data.success) {
-            saveAuthInfo(data);
-            updateLoginStatus();
-            
-            // Clear form
-            el("loginUsername").value = "";
-            el("loginPassword").value = "";
-            if (errorEl) errorEl.classList.add("hidden");
-            
-            // Close modal
-            const modal = el("loginModal");
-            if (modal) {
-              modal.classList.add("hidden");
-              modal.style.display = "none";
-            }
-            
-            // If demo account, clear API key field (will use server key)
-            if (data.is_demo) {
-              el("apiKey").value = "";
-            }
-          } else {
-            if (errorEl) {
-              errorEl.classList.remove("hidden");
-              errorEl.innerHTML = `<div class="title">Login failed</div><div>Логин некорректный, try again</div>`;
-            }
+      const loginForm = el("loginForm");
+      if (loginForm) {
+        loginForm.addEventListener("submit", handleLoginSubmit);
+      }
+
+      const apiKeyModalForm = el("apiKeyModalForm");
+      if (apiKeyModalForm) {
+        apiKeyModalForm.addEventListener("submit", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const key = (el("apiKeyModalInput")?.value || "").trim();
+          if (key) {
+            el("apiKey").value = key;
+            try { sessionStorage.setItem("contract_analyzer_api_key_session", key); } catch (e) {}
+            closeApiKeyModal();
+            setTimeout(() => handleFormSubmit(null), 0);
           }
-        } catch (e) {
-          console.error("Login error:", e);
-          if (errorEl) {
-            errorEl.classList.remove("hidden");
-            errorEl.innerHTML = `<div class="title">Error</div><div>Failed to connect to server</div>`;
-          }
-        }
-      });
+        });
+      }
 
       // Load settings on page load
       loadSettingsToAnalyzeForm();
       updateLoginStatus();
 
-      if (window.location.hash === "#analyze") {
+      if (window.location.hash === "#how") {
+        showHow();
+      } else if (window.location.hash === "#analyze") {
+        // Only reset example flag if it's not already set (i.e., not coming from try example)
+        if (!isExampleContract) {
+          isExampleContract = false;
+          const fileInput = el("pdfFile");
+          if (fileInput) {
+            fileInput.setAttribute("required", "required");
+            fileInput.value = "";
+          }
+        }
         showAnalyze();
         loadSettingsToAnalyzeForm();
       } else if (window.location.hash === "#settings") {
         showSettings();
+      } else {
+        showHero();
       }
-      el("ctaBtn").addEventListener("click", () => {
+      window.addEventListener("hashchange", () => {
+        console.log("hashchange event - hash:", window.location.hash, "isExampleContract:", isExampleContract);
+        if (window.location.hash === "#how") showHow();
+        else if (window.location.hash === "#analyze") {
+          // Only reset example flag if it's not already set (i.e., not coming from try example)
+          // We preserve isExampleContract if it was set by runExampleJob
+          const fileInput = el("pdfFile");
+          const hasFile = fileInput && fileInput.files && fileInput.files.length > 0;
+          
+          if (!isExampleContract && !hasFile) {
+            // Only clear file if we're not in example mode AND there's no file already set
+            isExampleContract = false;
+            if (fileInput) {
+              fileInput.setAttribute("required", "required");
+              fileInput.value = "";
+            }
+          } else {
+            // Flag is set or file exists - preserve the file and don't require it
+            if (fileInput && hasFile) {
+              fileInput.removeAttribute("required");
+            }
+          }
+          showAnalyze();
+          loadSettingsToAnalyzeForm();
+        }
+        else if (window.location.hash === "#settings") showSettings();
+        else showHero();
+      });
+
+
+      function goAnalyze(ev) {
+        if (ev) ev.preventDefault();
+        isExampleContract = false; // Reset flag when going to regular analyze - never use example here
+        // Clear file input (but keep text input - user might want to use text)
+        const fileInput = el("pdfFile");
+        if (fileInput) {
+          // Don't set required - user can use either file or text
+          fileInput.removeAttribute("required");
+          // Clear any file that might have been set
+          fileInput.value = "";
+          // Clear file info
+          const fileInfo = el("fileInfo");
+          if (fileInfo) {
+            fileInfo.style.display = "none";
+          }
+        }
+        // Don't clear text input - user might want to use it
         window.location.hash = "#analyze";
         showAnalyze();
         loadSettingsToAnalyzeForm();
-      });
-      el("settingsBtn").addEventListener("click", () => {
-        window.location.hash = "#settings";
-        showSettings();
-      });
-      el("settingsBackBtn").addEventListener("click", () => {
-        window.location.hash = "#";
-        showHero();
-      });
-      el("exampleBtn").addEventListener("click", async () => {
-        // First, navigate to analyze section
+        return false;
+      }
+      function goExample(ev) {
+        if (ev) ev.preventDefault();
+        console.log("goExample called - setting isExampleContract = true");
+        isExampleContract = true; // Set flag when going to example
         window.location.hash = "#analyze";
         showAnalyze();
+        loadSettingsToAnalyzeForm();
+        return false;
+      }
+
+      async function runExampleJob(ev) {
+        if (ev) ev.preventDefault();
+        console.log("runExampleJob called - loading example contract");
+        isExampleContract = true; // Keep flag for UI indication, but form will use actual file
+        // Set hash without triggering hashchange logic that might reset the flag
+        window.location.hash = "#analyze";
+        showAnalyze();
+        loadSettingsToAnalyzeForm();
         
-        // Wait a bit for DOM to update
+        // Load example contract into file input
+        try {
+          const response = await fetch("/static/example_contract.pdf", { 
+            credentials: "include"
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to load example contract: ${response.status} ${errorText.substring(0, 100)}`);
+          }
+          const blob = await response.blob();
+          const file = new File([blob], "example_contract.pdf", { type: "application/pdf" });
+          
+          // Set file in input
+          const fileInput = el("pdfFile");
+          if (!fileInput) {
+            console.error("File input not found");
+            alert("File input not found. Please refresh the page.");
+            return;
+          }
+          
+          try {
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            
+            // Verify file was set
+            if (!fileInput.files || fileInput.files.length === 0) {
+              console.error("Failed to set file in input - files array is empty");
+              alert("Failed to load example contract into form. Please try uploading your own file.");
+              return;
+            }
+            
+            const loadedFile = fileInput.files[0];
+            console.log("Example contract loaded successfully:", loadedFile.name, "size:", loadedFile.size);
+            
+            // Don't set required - user can replace with their own file or use text
+            fileInput.removeAttribute("required");
+            
+            // Show file name to user
+            const fileInfo = el("fileInfo");
+            if (fileInfo) {
+              fileInfo.style.display = "block";
+              fileInfo.style.color = "var(--accent)";
+              fileInfo.innerHTML = `✓ Example file selected: <strong>${loadedFile.name}</strong>`;
+            }
+            
+            // Verify file is still there after a short delay (to catch any issues)
+            setTimeout(() => {
+              const verifyFile = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+              if (verifyFile) {
+                console.log("Example file verified after delay:", verifyFile.name);
+              } else {
+                console.warn("Example file lost after delay - this should not happen");
+              }
+            }, 500);
+            
+            // Trigger change event to ensure form validation passes
+            const changeEvent = new Event("change", { bubbles: true, cancelable: true });
+            fileInput.dispatchEvent(changeEvent);
+            
+            // Also trigger input event for better compatibility
+            const inputEvent = new Event("input", { bubbles: true, cancelable: true });
+            fileInput.dispatchEvent(inputEvent);
+            
+            setStatus("Ready to process", "Click 'Process' to start analyzing the contract.");
+          } catch (err) {
+            console.error("Error setting file in input:", err);
+            alert("Failed to load example contract. Please try uploading your own file.");
+            return;
+          }
+        } catch (error) {
+          console.error("Failed to load example contract:", error);
+          alert("Failed to load example contract. Please try uploading your own file.");
+          return;
+        }
+        
+        setTimeout(() => {
+          loadSettingsToAnalyzeForm();
+          el("cancelBtn").disabled = true;
+          el("result").style.display = "none";
+          const split = el("splitView");
+          if (split) split.classList.add("hidden");
+          const pdfContainer = el("pdfContainer");
+          if (pdfContainer) pdfContainer.innerHTML = "";
+          const annotatedDoc = el("annotatedDocBox");
+          const annotatedDetail = el("annotatedDetailBox");
+          if (annotatedDoc) annotatedDoc.innerHTML = "";
+          if (annotatedDetail) annotatedDetail.innerHTML = "<div class=\"muted\">Click a highlighted clause to view details.</div>";
+          const nextBtnInline = el("nextClauseBtnInline");
+          if (nextBtnInline) nextBtnInline.style.display = "none";
+
+          renderDetailCard(null);
+          setStatus("Ready to process", "Click 'Process' to start analyzing the contract.");
+        }, 100);
+      }
+      const navExampleOld = el("navExampleOld");
+      if (navExampleOld) {
+        navExampleOld.addEventListener("click", async (e) => {
+        e.preventDefault();
+        goExample();
         await new Promise(resolve => setTimeout(resolve, 100));
         
         // Load example contract
@@ -1877,40 +2744,282 @@
           alert("Failed to load example contract. Please try uploading your own file.");
         }
       });
-      el("backBtn").addEventListener("click", () => {
-        window.location.hash = "#";
-        showHero();
-      });
+      }
 
-      el("uploadForm").addEventListener("submit", async (ev) => {
-        ev.preventDefault();
-        showAnalyze();
-        const file = el("pdfFile").files[0];
-        if (!file) return;
-              el("cancelBtn").disabled = true;
-        el("result").style.display = "none";
-        const split = el("splitView");
-        if (split) split.classList.add("hidden");
-        const pdfContainer = el("pdfContainer");
-        if (pdfContainer) pdfContainer.innerHTML = "";
-        renderDetailCard(null);
-        setStatus("Uploading...", "Uploading your document");
+      async function uploadText(text) {
+        console.log("uploadText called with text length:", text.length);
+        const fd = new FormData();
+        fd.append("text", text);
+        const provider = (el("provider")?.value || "nebius");
+        const apiKey = getEffectiveApiKey();
+        const baseUrl = (el("baseUrl")?.value || "");
+        const modelSel = (el("model")?.value || "");
+        const modelCustom = (el("modelCustom")?.value || "");
+        const model = modelCustom.trim() ? modelCustom.trim() : modelSel;
+        const authInfo = getAuthInfo();
+        const useDemoKey = authInfo && authInfo.success && authInfo.is_demo ? "1" : "0";
+        fd.append("provider", provider);
+        fd.append("api_key", apiKey);
+        fd.append("base_url", baseUrl);
+        fd.append("model", model);
+        fd.append("use_demo_key", useDemoKey);
+        const debugParagraphEnabled = el("enableDebugParagraph")?.checked ? "1" : "0";
+        const debugWindowEnabled = el("enableDebugWindow")?.checked ? "1" : "0";
+        const useLegacySingle = el("enableLegacySingle")?.checked ? "1" : "0";
+        const analysisMode = getAnalysisMode();
+        console.log(
+          "Debug checkboxes (text) - paragraph:",
+          debugParagraphEnabled,
+          "window:",
+          debugWindowEnabled,
+          "legacy_single:",
+          useLegacySingle
+        );
+        fd.append("enable_debug_paragraph", debugParagraphEnabled);
+        fd.append("enable_debug_window", debugWindowEnabled);
+        fd.append("mode", useLegacySingle === "1" ? "single_legacy" : "uk_two_stage");
+        fd.append("analysis_mode", analysisMode);
+        console.log("uploadText: Sending request to /upload-text");
         try {
-          const data = await uploadPdf(file);
+          const res = await fetch("/upload-text", { method: "POST", body: fd, credentials: "include" });
+          console.log("uploadText: Response status:", res.status);
+          const data = await res.json();
+          if (!res.ok) {
+            console.error("uploadText: Error response:", data);
+            throw new Error(data.detail || data.error || "Text upload failed");
+          }
+          console.log("uploadText: Success, job_id:", data.job_id);
+          return data;
+        } catch (e) {
+          console.error("uploadText: Exception:", e);
+          throw e;
+        }
+      }
+
+      async function handleFormSubmit(ev) {
+        console.log("=== handleFormSubmit called ===", ev);
+        console.log("isExampleContract:", isExampleContract);
+        
+        // Always prevent default form submission
+        if (ev) {
+        ev.preventDefault();
+          ev.stopPropagation();
+        }
+        
+        // Check if user uploaded a file or entered text BEFORE calling showAnalyze
+        // to avoid any potential form resets
+        const fileInput = el("pdfFile");
+        const textInput = el("contractText");
+        
+        console.log("Inputs found - fileInput:", !!fileInput, "textInput:", !!textInput);
+        
+        if (!fileInput || !textInput) {
+          console.error("Form inputs not found");
+          setStatus("Form inputs not found. Please refresh the page.", "Error");
+          return;
+        }
+        
+        // Capture file reference immediately before any DOM manipulation
+        const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+        const textValue = textInput.value || "";
+        const text = textValue.trim();
+        
+        console.log("File check - files.length:", fileInput.files ? fileInput.files.length : 0, "file:", file ? file.name : "none", "file size:", file ? file.size : 0);
+        console.log("Text check - raw length:", textValue.length, "trimmed length:", text.length, "text preview:", text.substring(0, 50));
+        
+        // Clear error states
+        const apiKeyField = el("apiKeyField");
+        const apiKeyError = el("apiKeyError");
+        if (apiKeyField) apiKeyField.classList.remove("field-error");
+        if (apiKeyError) apiKeyError.style.display = "none";
+        const modelField = el("modelField");
+        const modelError = el("modelError");
+        if (modelField) modelField.classList.remove("field-error");
+        if (modelError) modelError.style.display = "none";
+
+        // Validate that at least one input is provided
+        if (!file && !text) {
+          console.log("No file or text provided");
+          setStatus("Please select a PDF file or enter contract text", "Error");
+          return;
+        }
+        
+        // Require API key unless user is logged in as demo
+        let apiKeyValue = (el("apiKey")?.value || "").trim();
+        if (!apiKeyValue) {
+          const settingsApiKeyVal = (el("settingsApiKey")?.value || "").trim();
+          if (settingsApiKeyVal) {
+            el("apiKey").value = settingsApiKeyVal;
+            apiKeyValue = settingsApiKeyVal;
+          }
+        }
+        if (!apiKeyValue) {
+          try {
+            const sessionKey = sessionStorage.getItem("contract_analyzer_api_key_session") || "";
+            if (sessionKey.trim()) {
+              el("apiKey").value = sessionKey.trim();
+              apiKeyValue = sessionKey.trim();
+            }
+          } catch (e) {
+            console.error("Failed to read sessionStorage for API key:", e);
+          }
+        }
+        const authInfo = getAuthInfo();
+        const isDemo = authInfo && authInfo.success && authInfo.is_demo;
+        if (!apiKeyValue && !isDemo) {
+          if (apiKeyField) apiKeyField.classList.add("field-error");
+          if (apiKeyError) apiKeyError.style.display = "block";
+          openApiKeyModal();
+          return;
+        }
+        
+        const modelSel = (el("model")?.value || "").trim();
+        const modelCustom = (el("modelCustom")?.value || "").trim();
+        if (!modelSel && !modelCustom) {
+          if (modelField) modelField.classList.add("field-error");
+          if (modelError) modelError.style.display = "block";
+          setStatus("Select a model or enter a custom one.", "Error");
+          return;
+        }
+        
+        // Determine what to process: file has priority over text
+        const hasFile = !!file;
+        const hasText = !!text;
+        
+        console.log("Proceeding with processing - file:", hasFile, "text:", hasText);
+        
+        if (hasFile && hasText) {
+          console.log("Both file and text provided - using file (file has priority)");
+        } else if (hasFile) {
+          console.log("Processing file only - file name:", file.name, "size:", file.size);
+          if (isExampleContract) {
+            console.log("This is an example contract - processing example file");
+          }
+        } else if (hasText) {
+          console.log("Processing text only");
+        }
+        
+        // Now show analyze section after we've captured the file reference
+        const analyze = el("analyzeSection");
+        const isAnalyzeVisible = analyze && !analyze.classList.contains("hidden") && analyze.style.display !== "none";
+        if (!isAnalyzeVisible) {
+          showAnalyze();
+        }
+        
+        const cancelBtn = el("cancelBtn");
+        const resultDiv = el("result");
+        const split = el("splitView");
+        const pdfContainer = el("pdfContainer");
+        
+        if (cancelBtn) cancelBtn.disabled = true;
+        if (resultDiv) resultDiv.style.display = "none";
+        if (split) split.classList.add("hidden");
+        if (pdfContainer) pdfContainer.innerHTML = "";
+        // Clear any previous annotated-view content
+        const annotatedDoc = el("annotatedDocBox");
+        const annotatedDetail = el("annotatedDetailBox");
+        if (annotatedDoc) annotatedDoc.innerHTML = "";
+        if (annotatedDetail) annotatedDetail.innerHTML = "<div class=\"muted\">Click a highlighted clause to view details.</div>";
+        const nextBtnInline = el("nextClauseBtnInline");
+        if (nextBtnInline) nextBtnInline.style.display = "none";
+
+        renderDetailCard(null);
+        
+        setStatus("Uploading...", "Uploading your document");
+        
+        try {
+          let data;
+          // File has priority over text
+          if (file) {
+            console.log("Calling uploadPdf - file:", file.name, "size:", file.size);
+            if (isExampleContract) {
+              console.log("Processing example contract file");
+            }
+            data = await uploadPdf(file);
+          } else if (text) {
+            console.log("Calling uploadText - text length:", text.length);
+            data = await uploadText(text);
+          } else {
+            // This should not happen due to validation above, but just in case
+            throw new Error("No file or text provided for processing");
+          }
+          
+          console.log("Upload successful, job_id:", data.job_id);
           currentJobId = data.job_id;
-          el("jobInfo").textContent = `Job ID: ${currentJobId}`;
+          try { localStorage.setItem("contract_analyzer_last_job_id", currentJobId); } catch (e) {}
+          
+          const jobInfo = el("jobInfo");
+          if (jobInfo) jobInfo.textContent = "";
+          
           setStatus(
             "Queued. Starting analysis…",
             "Please wait a moment. We are analyzing your document."
           );
-          el("cancelBtn").disabled = false;
+          
+          if (cancelBtn) cancelBtn.disabled = false;
           startPolling(currentJobId);
         } catch (e) {
-          setStatus(String(e), "Error");
+          console.error("Upload error:", e);
+          setStatus(String(e.message || e), "Error");
         }
-      });
+      }
 
-      el("cancelBtn").addEventListener("click", async () => {
+      async function resumeLastJobIfAny() {
+        let jobId = "";
+        try { jobId = localStorage.getItem("contract_analyzer_last_job_id") || ""; } catch (e) {}
+        if (!jobId) return;
+        try {
+          const job = await fetchJob(jobId);
+          currentJobId = jobId;
+          // Ensure analyze section is visible so results can be rendered
+          showAnalyze();
+          loadSettingsToAnalyzeForm();
+          if (job.status === "done") {
+            const result = await fetchResult(jobId);
+            renderResult(result);
+            el("cancelBtn").disabled = true;
+          } else if (job.status === "failed" || job.status === "cancelled") {
+            setStatus(`${job.status === "cancelled" ? "Cancelled" : "Failed"}: ${job.error || "Unknown error"}`, "Stopped");
+            el("cancelBtn").disabled = true;
+          } else {
+            setStatus("Processing…", "Please wait a moment. We are analyzing your document.");
+            startPolling(jobId);
+          }
+        } catch (e) {
+          // If job no longer exists, clear stored id
+          try { localStorage.removeItem("contract_analyzer_last_job_id"); } catch (err) {}
+        }
+      }
+
+      const uploadForm = el("uploadForm");
+      if (!uploadForm) {
+        console.error("uploadForm not found!");
+      } else {
+        uploadForm.setAttribute("novalidate", "novalidate");
+        uploadForm.addEventListener("submit", (ev) => {
+          handleFormSubmit(ev);
+        });
+      }
+      
+      function setupProcessButton() {
+        const processBtn = el("processBtn");
+        if (!processBtn) {
+          console.warn("Process button not found by ID");
+          return;
+        }
+        processBtn.type = "button";
+        processBtn.onclick = function(ev) {
+          return handleFormSubmit(ev);
+        };
+      }
+      
+      setupProcessButton();
+
+      async function handleCancel(ev) {
+        if (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
         if (!currentJobId) return;
         el("cancelBtn").disabled = true;
         try {
@@ -1919,7 +3028,125 @@
         } catch (e) {
           setStatus(String(e), "Error");
         }
-      });
+        return false;
+      }
+      el("cancelBtn").addEventListener("click", handleCancel, true);
+
+      function downloadResultsAsExcel() {
+        try {
+        if (!currentResult || !currentResult.findings || currentResult.findings.length === 0) {
+            alert("No findings to download.");
+            return;
+          }
+          
+          if (typeof XLSX === 'undefined') {
+            alert("Excel library not loaded. Please refresh the page.");
+          return;
+        }
+        
+        const findings = currentResult.findings;
+        const headers = [
+          "Quote",
+          "Explanation (UK law)",
+          "Legal references",
+          "Possible consequences",
+          "Severity of consequences (0–3)",
+          "Consequences category",
+          "Risk category"
+        ];
+        
+        const rows = findings.map(f => [
+          f.evidence_quote || "",
+          f.explanation || "",
+          (f.legal_references || []).join("; "),
+          f.possible_consequences || "",
+          f.risk_assessment?.severity_of_consequences ?? "",
+          f.consequences_category || "",
+          f.risk_category || ""
+        ]);
+        
+        const worksheetData = [headers, ...rows];
+        const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+        
+        // Устанавливаем ширину колонок для лучшей читаемости
+        const colWidths = [
+          { wch: 40 }, // Quote
+          { wch: 50 }, // Explanation
+          { wch: 30 }, // Legal references
+          { wch: 40 }, // Possible consequences
+          { wch: 15 }, // Severity
+          { wch: 25 }, // Consequences category
+          { wch: 25 }  // Risk category
+        ];
+        worksheet['!cols'] = colWidths;
+        
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Findings");
+        
+        const baseName = currentResult?.document?.filename
+          ? currentResult.document.filename.replace(/\.[^.]+$/i, "")
+          : `contract_analysis_${currentJobId || "results"}`;
+
+        const filename = `${baseName}_results.xlsx`;
+        
+        XLSX.writeFile(workbook, filename);
+        } catch (e) {
+          console.error("Error downloading Excel:", e);
+          alert("Failed to download Excel file: " + e.message);
+        }
+      }
+
+      async function downloadAnnotatedPdf() {
+        if (!currentJobId) {
+          alert("No job ID available. Please process a contract first.");
+          return;
+        }
+        try {
+          const url = `/job/${currentJobId}/annotated.pdf`;
+          const response = await fetch(url, { credentials: "include" });
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => "");
+            throw new Error(`Failed to download annotated PDF: ${response.status} ${errorText.substring(0, 100)}`);
+          }
+          const blob = await response.blob();
+          const link = document.createElement("a");
+          const urlObj = URL.createObjectURL(blob);
+          link.href = urlObj;
+          const baseName = currentResult?.document?.filename
+            ? currentResult.document.filename.replace(/\.[^.]+$/i, "")
+            : `contract_${currentJobId}`;
+
+          const filename = `${baseName}_annotated.pdf`;
+          link.download = filename;
+          link.style.visibility = "hidden";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(urlObj);
+        } catch (e) {
+          console.error("Error downloading PDF:", e);
+          alert("Failed to download annotated PDF: " + e.message);
+        }
+      }
+
+      // Initialize download buttons
+      const downloadResultsBtn = el("downloadResultsBtn");
+      const downloadAnnotatedPdfBtn = el("downloadAnnotatedPdfBtn");
+      
+      if (downloadResultsBtn) {
+        downloadResultsBtn.addEventListener("click", downloadResultsAsExcel);
+      } else {
+        console.warn("downloadResultsBtn not found");
+      }
+      
+      if (downloadAnnotatedPdfBtn) {
+        downloadAnnotatedPdfBtn.addEventListener("click", downloadAnnotatedPdf);
+      } else {
+        console.warn("downloadAnnotatedPdfBtn not found");
+      }
+
+      // Try to resume the last job if the tab was refreshed
+      resumeLastJobIfAny();
 
     </script>
   </body>

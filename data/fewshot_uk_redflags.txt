@@ -1,0 +1,362 @@
+========================
+FEW-SHOT EXAMPLES (EXTENDED, HIGH-CONTEXT)
+Use as guidance patterns. Helpful cues are NOT mandatory; they are heuristics.
+Always require verbatim evidence from TEXT CHUNK for any finding.
+========================
+
+GLOBAL RULES TO REDUCE FALSE POSITIVES (DO NOT FLAG)
+A) Emergency entry:
+   - Do NOT flag entry clauses limited to genuine emergencies (fire, flood, gas leak, serious safety risk).
+B) Reasonable notice entry:
+   - Do NOT flag clauses that require reasonable notice (e.g., "24 hours' written notice") and reasonable times for non-emergency access.
+C) Lawful notice/termination:
+   - Do NOT flag clauses explicitly requiring written notice and compliance with statutory requirements/minimum notice.
+D) Fees/payments:
+   - Do NOT flag clauses that restrict fees to those "permitted by law" AND do not impose specific extra fees.
+E) Service charges:
+   - Do NOT flag clauses limited to "reasonable" costs, supported by evidence/receipts, with tenant ability to challenge.
+F) Repairs / tenant duties:
+   - Do NOT flag normal tenant obligations (cleanliness, minor upkeep) unless they clearly shift statutory landlord repair/safety duties or remove tenant remedies.
+
+GLOBAL RULES FOR QUOTES & OUTPUT BEHAVIOR
+1) Every selected category must have a verbatim quote that directly supports the red flag.
+2) If you cannot quote it, do NOT flag it.
+3) Prefer fewer, stronger findings over many weak ones.
+
+------------------------------------------------------------
+CATEGORY: Deposits & Deposit Protection
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "returned at landlord’s convenience"
+- "deposit may be transferred to landlord's personal account"
+- "deposit protection is optional/not required"
+- "no timeframe" / "indefinite"
+- "any deductions landlord decides" / "at landlord discretion"
+- mandatory cleaning/repainting regardless of condition
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"Deposit will be returned at landlord’s convenience. No fixed timeframe for return of deposit."
+
+EXPECTED BEHAVIOR:
+- Flag "Deposits & Deposit Protection"
+- Quote: "returned at landlord’s convenience" (verbatim)
+- Core point: open-ended landlord discretion, unclear/indefinite return.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"The deposit will be returned within 10 working days after the tenancy ends, subject to evidenced deductions for damage beyond fair wear and tear."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"The deposit will be protected in an authorised tenancy deposit scheme as required by law and the prescribed information will be provided to the Tenant."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- If a clause mentions deductions, only flag if it allows arbitrary deductions ("any sum landlord decides") or automatic deductions (e.g., mandatory professional cleaning regardless of condition).
+- If it’s just “reasonable deductions for damage beyond fair wear and tear” → usually no finding.
+
+------------------------------------------------------------
+CATEGORY: Licensing & Regulatory Compliance
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "gas safety checks are unnecessary"
+- "no certificates required"
+- "tenant waives safety requirements"
+- "as-is; landlord not responsible for safety/compliance"
+- "tenant responsible for statutory checks/inspections"
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"Tenant accepts that gas safety checks are unnecessary. Landlord is not responsible for providing safety certificates."
+
+EXPECTED BEHAVIOR:
+- Flag "Licensing & Regulatory Compliance"
+- Quote: "gas safety checks are unnecessary" / "not responsible for providing safety certificates"
+- Core point: attempts to waive statutory obligations / misleading.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"Landlord will comply with all safety and licensing obligations and will provide required certificates upon request."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"The Tenant must test smoke alarms regularly. This does not affect the Landlord’s statutory safety obligations."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- Tenant duties like “test smoke alarms” can be fine, but if the clause shifts landlord duties (“tenant responsible for gas safety certificate”) → flag.
+
+------------------------------------------------------------
+CATEGORY: Notice Requirements
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "oral notice"
+- "notice of any length chosen by the landlord"
+- "immediate termination" / "without notice"
+- "no written notice required"
+- "no consultation required" (especially around major works if that’s the context)
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"The landlord may terminate the tenancy by giving the tenant oral notice or written notice of any length chosen by the landlord."
+
+EXPECTED BEHAVIOR:
+- Flag "Notice Requirements"
+- Quote: "oral notice" and/or "any length chosen by the landlord"
+- Core point: undermines written notice/minimum notice safeguards.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"Any notice must be in writing and comply with all statutory requirements, including any minimum notice periods."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"Notices may be served by email or post, provided they are in writing."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- If the clause just describes how to serve notice (post/email) and clearly keeps it written → usually no finding.
+- Flag when it reduces notice to oral, discretionary, or “any length”.
+
+------------------------------------------------------------
+CATEGORY: Possession, Eviction & Court Process
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "without applying to the court"
+- "immediate possession" / "re-enter"
+- "tenant must leave immediately"
+- "forfeiture" used as self-help while tenant occupies
+- "evict at any time"
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"When the tenancy ends, the landlord may take back possession immediately and require any occupier still living in the premises to leave without applying to the court."
+
+EXPECTED BEHAVIOR:
+- Flag "Possession, Eviction & Court Process"
+- Quote: "leave without applying to the court"
+- Core point: bypasses lawful eviction procedure.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"The landlord may seek possession by following the statutory procedure and obtaining a court order where required."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"This clause does not affect the tenant’s statutory protections regarding eviction."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- If the clause is purely about “seeking possession” and references lawful routes → usually no finding.
+- If it implies immediate removal without court → flag (high severity).
+
+------------------------------------------------------------
+CATEGORY: Quiet Enjoyment & Occupier Rights
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "enter at any time"
+- "without notice"
+- "tenant must provide access whenever requested"
+- "retain keys and enter freely"
+- "daily inspections" / "viewings at any time"
+- "tenant waives quiet enjoyment"
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"Landlord may enter the property at any time without notice. The tenant must provide access whenever requested."
+
+EXPECTED BEHAVIOR:
+- Flag "Quiet Enjoyment & Occupier Rights"
+- Quote: "at any time without notice"
+- Core point: unrestricted entry undermines quiet enjoyment.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"Landlord may enter with at least 24 hours’ written notice at a reasonable time for inspections/repairs, except in genuine emergencies."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"In an emergency, the Landlord may enter without notice to prevent serious damage or ensure safety."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- “Reasonable notice + reasonable times + specific purposes” → usually fair.
+- “Any time / without notice / whenever requested” → likely red flag.
+
+------------------------------------------------------------
+CATEGORY: Rent, Fees & Prohibited Payments
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "administration fee" / "reference fee" / "check-out fee"
+- "non-refundable fee"
+- "must pay for landlord’s agent costs"
+- forced third-party services as condition (e.g., mandatory cleaning/insurance)
+- "loan to landlord"
+- automatic landlord legal costs charged to tenant
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"The tenant must pay the landlord a non-refundable administration fee of £300 as a condition of entering into the tenancy."
+
+EXPECTED BEHAVIOR:
+- Flag "Rent, Fees & Prohibited Payments"
+- Quote: "non-refundable administration fee of £300"
+- Core point: likely prohibited/unenforceable extra fee.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"No fees are payable by the tenant in connection with this tenancy except payments permitted by law."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"The Tenant shall not be required to make any loan to the Landlord or to any other person in connection with this tenancy."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- If clause says “fees as permitted by law” but then lists specific admin fees → flag (the list is evidence).
+- If it only says “permitted by law” and no extra fees → usually no finding.
+
+------------------------------------------------------------
+CATEGORY: Tenancy Type & Security of Tenure
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "statutory protections do not apply"
+- "tenant waives statutory rights"
+- "fitness protections disapplied"
+- "this is not a tenancy" when it clearly is residential occupancy (be cautious: only act on what’s in chunk)
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"Statutory protections do not apply to this tenancy type. Fitness protections are expressly disapplied."
+
+EXPECTED BEHAVIOR:
+- Flag "Tenancy Type & Security of Tenure"
+- Quote: "Statutory protections do not apply"
+- Core point: attempts to contract out of mandatory protections.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"Nothing in this agreement limits or excludes statutory rights or protections that apply to the tenant."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"The parties acknowledge that statutory rights apply where relevant and cannot be excluded by contract."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- Don’t infer tenancy classification from outside facts; only flag explicit attempts to remove statutory rights.
+
+------------------------------------------------------------
+CATEGORY: Unfair Terms & Consumer Protection
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- tenant loses remedies for landlord breach ("no compensation", "no set-off", "must pay regardless")
+- unilateral variation ("landlord may change terms at any time")
+- exclusion of liability (especially personal injury/death due to negligence)
+- excessive penalties/late fees unrelated to loss
+- non-refundable sums retained even if landlord cancels
+- forced arbitration/no court access
+- "sole discretion" to decide disputes unilaterally
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"Tenant must pay full rent even when landlord fails to provide essential repairs."
+
+EXPECTED BEHAVIOR:
+- Flag "Unfair Terms & Consumer Protection"
+- Quote: "must pay full rent even when landlord fails"
+- Core point: strips tenant remedies / significant imbalance.
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"This agreement becomes binding when signed by both parties."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"Late payment interest may be charged only as permitted by law and only to the extent reasonable."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- Clauses about “rent must be paid” are normal; flag only when it explicitly removes remedies even for landlord breach or imposes one-sided terms.
+
+------------------------------------------------------------
+CATEGORY: Unlawful Eviction & Harassment
+------------------------------------------------------------
+HELPFUL CUES (non-exhaustive; not mandatory)
+- "change the locks"
+- "remove/dispose of belongings"
+- "force the tenant to leave"
+- "withdraw services" (heat/water/electricity) to compel compliance
+- "harass" / "pressure" / "enter to remove occupiers" (be evidence-led)
+
+[TRUE POSITIVE]
+TEXT CHUNK:
+"The landlord may remove the tenant’s belongings or change the locks if the landlord decides the tenancy should end."
+
+EXPECTED BEHAVIOR:
+- Flag "Unlawful Eviction & Harassment"
+- Quote: "remove the tenant’s belongings" and/or "change the locks"
+- Core point: self-help eviction/harassment indicators (high severity).
+
+[HARD NEGATIVE #1]
+TEXT CHUNK:
+"The Landlord shall not unlawfully deprive the Tenant of occupation of the Property and will recover possession only through the lawful process."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+[HARD NEGATIVE #2]
+TEXT CHUNK:
+"The Landlord may change the locks only after the Tenant has lawfully surrendered the property and returned all keys, and in accordance with the law."
+
+EXPECTED OUTPUT:
+{"findings": []}
+
+BORDERLINE NOTES
+- Any clause suggesting lock changes/removal of belongings while tenant occupies → treat as high-risk red flag.
+- If the clause is explicitly after lawful surrender + in accordance with law → typically not a finding.
+
+========================
+END FEW-SHOT EXAMPLES (EXTENDED)
+========================

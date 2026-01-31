@@ -38,14 +38,7 @@ class JobStatusResponse(BaseModel):
     updated_at: datetime
 
 
-RedFlagCategory = Literal[
-    "Termination For Convenience",
-    "Uncapped Liability",
-    "Irrevocable Or Perpetual License",
-    "Most Favored Nation",
-    "Audit Rights",
-    "Ip Ownership Assignment",
-]
+RedFlagCategory = str
 
 
 class RiskAssessment(BaseModel):
@@ -113,8 +106,8 @@ class RedFlagFindingLLM(BaseModel):
                 return a
             if "ip" in v_lower and "ownership" in v_lower and "assignment" in v_lower:
                 return a
-        # If no match, return first allowed as fallback (better than failing validation)
-        return allowed[0]
+        # If no match, keep the original value (allows non-CUAD categories).
+        return v_clean
 
     @field_validator("consequences_category", mode="before")
     @classmethod
@@ -166,7 +159,18 @@ class RedFlagFindingLLM(BaseModel):
 
 
 class RedFlagChunkOutput(BaseModel):
-    findings: list[RedFlagFindingLLM] = Field(default_factory=list, max_length=2)
+    findings: list[RedFlagFindingLLM] = Field(default_factory=list)
+
+
+class RouterCandidateCategory(BaseModel):
+    category: str
+    confidence: Literal["low", "medium", "high"]
+    trigger_quotes: list[str] = Field(default_factory=list, max_length=3)
+    rationale: str = Field(default="", max_length=400)
+
+
+class RouterCategoriesOutput(BaseModel):
+    candidate_categories: list[RouterCandidateCategory] = Field(default_factory=list)
 
 
 class Stage1Prob(BaseModel):

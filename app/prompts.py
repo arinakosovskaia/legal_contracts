@@ -14,6 +14,7 @@ Structure:
 """
 
 import json
+import os
 from typing import Any
 
 
@@ -241,7 +242,6 @@ def format_redflag_prompt(
     *,
     categories_list: str,
     section_path: str,
-    max_findings: int,
     category_definitions: str,
     fewshot_section: str,
     text_chunk: str,
@@ -263,14 +263,15 @@ def format_redflag_prompt(
     """
     section_prefix = f"CONTEXT PREFIX: {section_path}\n\n" if section_path else ""
     
+    max_findings = int(os.environ.get("MAX_FINDINGS_PER_CHUNK", "6"))
     user_prompt = get_redflag_user_prompt_template().format(
         categories_list=categories_list,
         section_path=section_path or "(none)",
-        max_findings=max_findings,
         category_definitions=category_definitions,
         fewshot_section=fewshot_section,
         section_prefix=section_prefix,
         text_chunk=text_chunk,
+        max_findings=max_findings,
     )
     
     sections = {
@@ -281,4 +282,210 @@ def format_redflag_prompt(
         "fewshot_available": bool(fewshot_section and fewshot_section.strip()),
     }
     
+    return user_prompt, sections
+
+
+def get_uk_router_system_prompt() -> str:
+    return (
+        'You are a high-recall clause router for UK residential tenancy "red flag" categories.\n'
+        "Your goal is to select ALL categories that might apply, even weakly, based ONLY on the TEXT CHUNK.\n"
+        "Be inclusive (high recall), but do not hallucinate: every selected category must be supported by at least one "
+        "verbatim trigger quote from the chunk."
+    )
+
+
+def get_uk_router_user_prompt_template() -> str:
+    return """CANDIDATE CATEGORIES (select any that might apply):
+{categories_list}
+
+CATEGORY DEFINITIONS:
+{category_definitions}
+
+CURRENT DOCUMENT LOCATION (context only; not evidence):
+{section_prefix}CONTEXT PREFIX: {section_path}
+
+TASK:
+From the TEXT CHUNK only, select ALL categories that could plausibly match (even if uncertain).
+For each selected category:
+- provide confidence: "low" | "medium" | "high"
+- provide 1-3 short trigger_quotes copied VERBATIM from the TEXT CHUNK that caused you to include the category
+- provide a one-sentence rationale tied to the trigger_quotes (no legal analysis here)
+
+RULES:
+- High recall: include categories even if you are only mildly suspicious.
+- No guessing: if you cannot quote any supporting trigger text verbatim, do NOT include the category.
+- Trigger quotes must be short (max ~20 words each) and copied exactly from the TEXT CHUNK.
+- If nothing matches at all, return {{"candidate_categories": []}}.
+- Do not output anything except the JSON object.
+
+OUTPUT JSON ONLY:
+Return STRICT JSON only. No Markdown. No extra keys. Must match schema exactly.
+{{
+  "candidate_categories": [
+    {{
+      "category": "<one of the categories above>",
+      "confidence": "low|medium|high",
+      "trigger_quotes": ["<verbatim quote>", "..."],
+      "rationale": "<one sentence>"
+    }}
+  ]
+}}
+
+TEXT CHUNK:
+{text_chunk}
+
+OUTPUT JSON:
+"""
+
+
+def format_uk_router_prompt(
+    *,
+    categories_list: str,
+    section_path: str,
+    category_definitions: str,
+    text_chunk: str,
+) -> tuple[str, dict[str, Any]]:
+    section_prefix = ""
+    user_prompt = get_uk_router_user_prompt_template().format(
+        categories_list=categories_list,
+        category_definitions=category_definitions,
+        section_prefix=section_prefix,
+        section_path=section_path or "(none)",
+        text_chunk=text_chunk,
+    )
+    sections = {
+        "context_prefix": section_path or "",
+        "text_chunk": text_chunk,
+        "category_definitions": category_definitions,
+    }
+    return user_prompt, sections
+
+
+def get_uk_redflag_system_prompt() -> str:
+    return (
+        'You are a UK residential tenancy contract "red flag" detector for tenants.\n'
+        "Your job is to identify potentially unlawful or unfair terms based ONLY on the provided TEXT CHUNK.\n"
+        "You must be conservative: do not guess, do not invent missing context, and do not use knowledge outside the "
+        "chunk for evidence.\n"
+        "When you flag a red flag, you must quote verbatim evidence from the chunk and explain why it is problematic "
+        "under UK law principles."
+    )
+
+
+def get_uk_redflag_user_prompt_template() -> str:
+    return """TASK
+Knowing only the provided TEXT CHUNK, identify whether it contains any unfair/unlawful tenant-facing terms that match one or more of these categories:
+{categories_list}
+
+CURRENT DOCUMENT LOCATION (context only; NOT evidence):
+{section_prefix}CONTEXT PREFIX: {section_path}
+
+OUTPUT REQUIREMENTS
+Return STRICT JSON ONLY. No Markdown. No extra keys. Must match schema exactly.
+Return up to {max_findings} findings per chunk (only the most salient / highest risk).
+If nothing matches, return {{"findings": []}}.
+
+DEFINITIONS
+Use the category definitions below to decide what qualifies as a match and to avoid false positives:
+{category_definitions}
+
+FEW-SHOT EXAMPLES
+(Use these patterns to guide decisions and to avoid false positives.)
+{fewshot_section}
+
+DECISION RULES (VERY IMPORTANT)
+1) Evidence MUST be copied verbatim from the provided TEXT CHUNK. Do not paraphrase evidence.
+2) Only flag a category if the chunk contains clear evidence of an UNFAIR or UNLAWFUL tenant-facing term.
+   - If the clause is clearly fair/standard-compliant, return no finding (even if it resembles a category).
+   - If it's suspicious but you cannot quote clear evidence, do NOT guess; return no finding.
+3) Treat CONTEXT PREFIX and category definitions as guidance only; they are NOT evidence.
+4) Prefer fewer, higher-confidence findings over many weak ones.
+5) False-positive defense:
+   - Do NOT flag emergency-only landlord access clauses that require genuine emergencies and/or reasonable notice.
+   - Do NOT flag lawful notice clauses that explicitly comply with written notice/minimum notice requirements.
+   - Do NOT flag permitted payments/fees when the clause explicitly says "only as permitted by law" and does not impose extra fees.
+   - Do NOT flag service charges when explicitly limited to "reasonable" / "in accordance with law" and challenge mechanisms are preserved.
+6) Legal analysis must be grounded in the chunk + general UK framework (typical references include CRA 2015, Tenant Fees Act 2019, Housing Act 2004 deposit protection, Protection from Eviction Act 1977, Landlord and Tenant Act 1985/1987, Homes (Fitness for Human Habitation) Act 2018). Only cite statutes that are plausibly relevant to the clause type.
+
+RISK SCORING RUBRIC (use integers)
+severity_of_consequences:
+0 = no meaningful tenant risk (should usually correspond to no finding)
+1 = potentially unfair; mainly civil dispute; likely negotiable/voidable
+2 = likely unenforceable/void OR could trigger civil penalties/serious tenant harm
+3 = potential criminal liability / severe illegality (e.g., unlawful eviction/harassment, illegal entry framed as a right, safety/licensing evasion)
+
+degree_of_legal_violation:
+0 = not a violation / compliant
+1 = ambiguous / depends on facts
+2 = likely violation or unfair term
+3 = clear violation (term purports to override mandatory law or creates plainly unlawful power)
+
+ENUMS (must use exactly one value from each list)
+consequences_category: "Invalid" | "Unenforceable" | "Void" | "Voidable" | "Nothing"
+risk_category: "Penalty" | "Criminal liability" | "Failure of the other party to perform obligations on time" | "Nothing"
+
+OUTPUT JSON SCHEMA
+{{
+  "findings": [
+    {{
+      "category": "<one of the categories above>",
+      "quote": "<verbatim quote from TEXT CHUNK>",
+      "reasoning": ["<1-3 short bullets tied directly to the quote>"],
+      "is_unfair": true,
+      "explanation": "Explain briefly why the quoted term may be unfair/unlawful under UK law principles relevant to tenants.",
+      "legal_references": [
+        "Name the most relevant UK statute/regime (sections only if confident)."
+      ],
+      "possible_consequences": "Practical impact on the tenant (money/rights/eviction risk/enforceability).",
+      "risk_assessment": {{
+        "severity_of_consequences": 0,
+        "degree_of_legal_violation": 0
+      }},
+      "consequences_category": "Invalid | Unenforceable | Void | Voidable | Nothing",
+      "risk_category": "Penalty | Criminal liability | Failure of the other party to perform obligations on time | Nothing",
+      "recommended_revision": {{
+        "revised_clause": "Rewrite the clause to be compliant and tenant-fair while preserving legitimate landlord needs.",
+        "revision_explanation": "One short sentence explaining what changed and why it fixes the issue."
+      }},
+      "suggested_follow_up": "Concrete next step(s) for the tenant (ask to amend, request certificate/scheme details, contact council/Trading Standards, get legal advice)."
+    }}
+  ]
+}}
+
+========================
+NOW CLASSIFY THIS INPUT
+========================
+TEXT CHUNK:
+{text_chunk}
+
+OUTPUT JSON:
+"""
+
+
+def format_uk_redflag_prompt(
+    *,
+    categories_list: str,
+    section_path: str,
+    category_definitions: str,
+    fewshot_section: str,
+    text_chunk: str,
+) -> tuple[str, dict[str, Any]]:
+    section_prefix = ""
+    max_findings = int(os.environ.get("MAX_FINDINGS_PER_CHUNK", "6"))
+    user_prompt = get_uk_redflag_user_prompt_template().format(
+        categories_list=categories_list,
+        section_path=section_path or "(none)",
+        category_definitions=category_definitions,
+        fewshot_section=fewshot_section,
+        section_prefix=section_prefix,
+        text_chunk=text_chunk,
+        max_findings=max_findings,
+    )
+    sections = {
+        "context_prefix": section_path or "",
+        "text_chunk": text_chunk,
+        "category_definitions": category_definitions,
+        "fewshot_examples": fewshot_section,
+        "fewshot_available": bool(fewshot_section and fewshot_section.strip()),
+    }
     return user_prompt, sections

@@ -163,7 +163,6 @@ async def main():
     out, raw, _ = await llm.classify_redflags_for_chunk(
         text_chunk=text_chunk,
         section_path=section_path,
-        max_findings=5,
         return_prompt=False,
     )
     
