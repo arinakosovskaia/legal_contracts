@@ -100,7 +100,6 @@ def main():
     system, user, sections = llm._build_redflag_prompt(
         text_chunk=text_chunk_clean,
         section_path="Sample Section / Termination Clause",
-        max_findings=2,
     )
     
     print()

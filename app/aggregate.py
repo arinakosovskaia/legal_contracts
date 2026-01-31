@@ -38,6 +38,11 @@ def dedupe_findings(findings: list[Finding]) -> list[Finding]:
     """
     seen = set()
     out: list[Finding] = []
+
+    def score_finding(f: Finding) -> tuple[int, int]:
+        quote_len = len(f.evidence_quote or "")
+        expl_len = len(f.explanation or "")
+        return (quote_len, expl_len)
     
     # First pass: exact deduplication
     for f in findings:
@@ -69,11 +74,6 @@ def dedupe_findings(findings: list[Finding]) -> list[Finding]:
             continue
         
         # Multiple findings from same paragraph with same category - merge them
-        def score_finding(f: Finding) -> tuple[int, int]:
-            quote_len = len(f.evidence_quote or "")
-            expl_len = len(f.explanation or "")
-            return (quote_len, expl_len)
-        
         best = max(group, key=score_finding)
         merged.append(best)
     

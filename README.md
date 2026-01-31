@@ -32,10 +32,11 @@ Set at least one API key:
 
 Optional:
 
-- `ENABLE_AUTH=1` to enable Basic Auth (default: enabled)
+- `ENABLE_AUTH=1` to enable Basic Auth (default: disabled)
 - `BASIC_AUTH_USER=your_username` (default: `demo`)
 - `BASIC_AUTH_PASS=your_password` (default: `demo`)
-- `LLM_TEMPERATURE=0.0` - Temperature for LLM calls (default: `0.0`, range: 0.0-2.0). Lower values make output more deterministic. Increase to `0.1` or `0.2` if you notice findings are missing.
+- `LLM_TEMPERATURE=0.0` - Temperature for LLM calls (default: `0.0`, range: 0.0-2.0). Keep at `0` for more deterministic results.
+- `LLM_SEED=42` - Optional. Seed for reproducible outputs (OpenAI and compatible APIs). Set to any integer (e.g. `42`) to reduce run-to-run variation; leave unset to not pass a seed.
 - `MAX_FINDINGS_PER_CHUNK=5` - Maximum number of findings per text chunk (default: `5`). Increase if you notice findings being truncated.
 
 **Note:** Basic Auth is enabled by default. When sharing your server publicly, change the default username/password!
@@ -49,6 +50,18 @@ docker compose up -d --build
 ### 4) Open the app
 
 Visit: `http://localhost:8000/`
+
+**Example contract (4 expected quotes):** The "Try example" / "Try example contract" flow uses `static/example_contract.pdf`. To get all 4 expected red-flag quotes highlighted (termination, price changes/MFN, indemnity), use the LIMEENERGYCO file:
+
+```bash
+./scripts/refresh_example_contract.sh
+```
+
+Then run analysis on the example contract. For reproducible results, set `LLM_TEMPERATURE=0` and optionally `LLM_SEED=42` in `.env`. To verify after a run:
+
+```bash
+python3 scripts/verify_example_quotes.py
+```
 
 ### 5) Stop
 

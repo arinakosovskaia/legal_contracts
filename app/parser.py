@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -168,6 +169,10 @@ def _merge_continuation_paragraphs(paras: list[ParaInfo] | list[str]) -> list[Pa
                     ParaInfo(text=top, bbox=p.bbox),
                     ParaInfo(text=sub + " " + body, bbox=p.bbox),
                 ]
+        # Also handle "1. TITLE BODY..." where TITLE is ALL CAPS and no period separates title/body.
+        cap_heading = re.compile(
+            r"^(?P<num>\d+(?:\.\d+)*)\s+(?P<title>[A-Z][A-Z\s]{3,80})\s+(?P<body>.+)$"
+        )
         patterns = [
             re.compile(r"^(?P<num>\d+(?:\.\d+){0,6})\s+(?P<title>[^.]{1,80})\.\s+(?P<body>.+)$"),
             re.compile(
@@ -175,6 +180,18 @@ def _merge_continuation_paragraphs(paras: list[ParaInfo] | list[str]) -> list[Pa
             ),
             re.compile(r"^(?P<prefix>§\s*\d+(?:\.\d+){0,6})\s+(?P<title>[^.]{1,80})\.\s+(?P<body>.+)$"),
         ]
+        m = cap_heading.match(t)
+        if m:
+            num = (m.group("num") or "").strip()
+            title = (m.group("title") or "").strip()
+            body = (m.group("body") or "").strip()
+            if num and title and body and len(body.split()) >= 4:
+                heading = f"{num} {title}".strip()
+                if parse_heading(heading, max_len=160) is not None:
+                    return [
+                        ParaInfo(text=heading, bbox=p.bbox),
+                        ParaInfo(text=body, bbox=p.bbox),
+                    ]
         for pat in patterns:
             m = pat.match(t)
             if not m:
@@ -410,6 +427,33 @@ def _split_into_paragraphs(page_text: str) -> List[ParaInfo]:
     flush_list()
     paragraphs = [p for p in paragraphs if p and p.strip()]
     para_infos = [ParaInfo(text=_strip_page_fragment(p), bbox=None) for p in paragraphs]
+
+    max_para_chars = int(os.environ.get("MAX_PARAGRAPH_CHARS", "1200"))
+    if max_para_chars > 0:
+        split_infos: list[ParaInfo] = []
+        for p in para_infos:
+            t = (p.text or "").strip()
+            if len(t) <= max_para_chars:
+                split_infos.append(p)
+                continue
+            # Split long paragraphs by sentence boundaries.
+            sentences = re.split(r"(?<=[.!?])\s+", t)
+            buf: list[str] = []
+            buf_len = 0
+            for s in sentences:
+                if not s:
+                    continue
+                if buf_len + len(s) + (1 if buf else 0) > max_para_chars and buf:
+                    split_infos.append(ParaInfo(text=" ".join(buf), bbox=p.bbox))
+                    buf = [s]
+                    buf_len = len(s)
+                else:
+                    buf.append(s)
+                    buf_len += len(s) + (1 if buf_len else 0)
+            if buf:
+                split_infos.append(ParaInfo(text=" ".join(buf), bbox=p.bbox))
+        para_infos = split_infos
+
     return _merge_continuation_paragraphs(para_infos)
 
 

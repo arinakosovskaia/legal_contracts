@@ -3,38 +3,70 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Annotated View</title>
+    <title>Annotated View — Contract Red-Flag Detector</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
     <style>
       :root {
-        --bg: #f5f7fb;
-        --ink: #0f172a;
-        --muted: #64748b;
-        --card: #ffffff;
-        --border: #e5e7eb;
-        --shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-        --hl: #fef08a;
+        --bg: #0a0a0a;
+        --ink: #fafafa;
+        --muted: #a1a1aa;
+        --card: #141414;
+        --border: #27272a;
+        --radius: 12px;
+        --radius-lg: 16px;
+        --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+        --gradient-btn: linear-gradient(135deg, #22c55e 0%, #06b6d4 50%, #0ea5e9 100%);
       }
       * { box-sizing: border-box; }
-      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+      body {
+        margin: 0;
+        font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        font-size: 15px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
       .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-      .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        box-shadow: var(--shadow);
+      }
+      h2 { font-size: 1.5rem; font-weight: 600; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
       .muted { color: var(--muted); }
-      .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      .doc { max-height: 80vh; overflow: auto; font-size: 14px; line-height: 1.5; }
-      .para { margin-bottom: 10px; padding: 6px 8px; border-radius: 8px; }
-      .para:hover { background: #f8fafc; }
-      .hl { background: var(--hl); border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; }
-      .hl:hover { background: #fde047; }
-      .hl.active { background: #fbbf24; border: 2px solid #f59e0b; }
-      .btn { padding: 8px 16px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
-      .btn:hover { background: #2563eb; }
-      .detail-field { margin-bottom: 12px; }
-      .detail-field .label { font-weight: 600; margin-bottom: 4px; font-size: 14px; }
+      .split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      .doc { max-height: 80vh; overflow: auto; font-size: 14px; line-height: 1.55; border-radius: var(--radius); }
+      .para { margin-bottom: 12px; padding: 10px 12px; border-radius: var(--radius); transition: background 0.2s ease; }
+      .para:hover { background: rgba(255,255,255,0.04); }
+      .hl { background: rgba(250, 204, 21, 0.4); border-radius: 4px; padding: 0 2px; cursor: pointer; text-decoration: underline; transition: background 0.2s ease; }
+      .hl:hover { background: rgba(250, 204, 21, 0.6); }
+      .hl.active { background: rgba(251, 191, 36, 0.7); border: 2px solid #f59e0b; }
+      .btn {
+        padding: 10px 18px;
+        background: var(--gradient-btn);
+        color: #fff;
+        border: none;
+        border-radius: var(--radius);
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        font-family: inherit;
+        transition: opacity 0.2s ease, transform 0.2s ease;
+      }
+      .btn:hover { opacity: 0.95; transform: translateY(-1px); }
+      .detail-field { margin-bottom: 16px; font-size: 14px; line-height: 1.55; }
+      .detail-field .label { font-weight: 600; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
       .detail-field .value,
       .detail-field div,
       .detail-field pre,
-      .detail-field ul { font-size: 14px; font-family: inherit; line-height: 1.5; }
+      .detail-field ul { color: var(--ink); font-family: inherit; }
       .detail-field pre { white-space: pre-wrap; margin: 0; }
+      .back-link:hover { color: var(--ink); }
       @media (max-width: 980px) {
         .split { grid-template-columns: 1fr; }
         .doc { max-height: none; }
@@ -43,6 +75,9 @@
   </head>
   <body>
     <div class="container">
+      <div style="margin-bottom: 16px;">
+        <a href="/" class="back-link" style="color: var(--muted); font-size: 14px; text-decoration: none; transition: color 0.2s ease;">← Back to Contract Red-Flag Detector</a>
+      </div>
       <div class="card">
         <h2>Detailed explanation of unfair clauses</h2>
         <p class="muted" style="margin-top: 8px; margin-bottom: 16px;">Click on a highlighted clause to view detailed analysis.</p>
@@ -79,10 +114,10 @@
       function buildRanges(text, quote, findingId) {
         const ranges = [];
         if (!quote) return ranges;
-        const t = normalizeDisplay(text);
-        const q = normalizeDisplay(quote);
+        const t = String(text || "");
+        const q = String(quote || "").trim();
         if (!q || q.length < 5) return ranges; // Too short
-        // Try exact match first
+        // Try exact match first (backend sends normalized text)
         let start = 0;
         while (true) {
           const idx = t.indexOf(q, start);
