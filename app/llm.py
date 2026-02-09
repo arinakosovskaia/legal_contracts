@@ -16,11 +16,8 @@ from .models import (
     RedFlagChunkOutput,
     RedFlagFindingLLM,
     RouterCategoriesOutput,
-    Stage1Category,
-    Stage1Output,
-    Stage1Prob,
-    Stage2Output,
 )
+from .validate_legal_refs import filter_valid_legal_references
 from .categories import load_categories_from_csv, write_categories_json
 
 T = TypeVar("T", bound=BaseModel)
@@ -209,13 +206,18 @@ class LLMRunner:
     def _build_quote_repair_prompt(self, *, paragraph_text: str, target_quote: str) -> tuple[str, str]:
         system = (
             "You are a precise text extractor. "
-            "Given a PARAGRAPH and a TARGET QUOTE (which may be approximate), "
-            "return the exact verbatim substring from the PARAGRAPH that best matches the target. "
-            "If you cannot find a clear match, return an empty string."
+            "Given a PARAGRAPH and a TARGET QUOTE (which may have minor differences like punctuation, spacing, or case), "
+            "find the exact verbatim substring from the PARAGRAPH that matches the target quote in meaning. "
+            "The quote should be semantically identical but may have minor formatting differences (punctuation, spacing, capitalization). "
+            "Return the EXACT text from the PARAGRAPH, not a paraphrase. "
+            "If you cannot find a clear match that is semantically identical, return an empty string."
         )
         user = (
             "Return JSON only in the form: {\"quote\": \"...\"}\n\n"
-            f"PARAGRAPH:\n{paragraph_text}\n\nTARGET QUOTE:\n{target_quote}"
+            f"PARAGRAPH:\n{paragraph_text}\n\n"
+            f"TARGET QUOTE (find the semantically identical text in the paragraph above):\n{target_quote}\n\n"
+            f"Find the exact substring from the PARAGRAPH that matches the TARGET QUOTE in meaning. "
+            f"Minor differences in punctuation, spacing, or capitalization are acceptable, but the meaning must be identical."
         )
         return system, user
 
@@ -506,6 +508,14 @@ class LLMRunner:
         text_chunk: str,
         section_path: str,
     ) -> tuple[str, str, dict[str, Any]]:
+        """
+        Build the UK router prompt (first stage of two-stage classification).
+        
+        NOTE: To modify the prompt instructions, edit app/prompts.py:
+        - System prompt: get_uk_router_system_prompt()
+        - User prompt: get_uk_router_user_prompt_template()
+        This method just assembles the prompt from templates.
+        """
         from .prompts import get_uk_router_system_prompt, format_uk_router_prompt
 
         categories_list, defs, _names = self._build_uk_category_blocks()
@@ -529,6 +539,15 @@ class LLMRunner:
         section_path: str,
         allowed_category_ids: list[str],
     ) -> tuple[str, str, dict[str, Any]]:
+        """
+        Build the UK classifier prompt (second stage of two-stage classification).
+        
+        NOTE: To modify the prompt instructions, edit app/prompts.py:
+        - System prompt: get_uk_redflag_system_prompt()
+        - User prompt: get_uk_redflag_user_prompt_template()
+        - Few-shot examples: data/fewshot_uk_redflags.txt (plain text file)
+        This method just assembles the prompt from templates.
+        """
         from .prompts import get_uk_redflag_system_prompt, format_uk_redflag_prompt
 
         allowed_set = {n.strip() for n in allowed_category_ids if n and n.strip()}
@@ -642,7 +661,6 @@ class LLMRunner:
         Note: text_chunk should already be normalized before calling this function.
         LLM will see normalized text and return quote from it.
         """
-        # Don't normalize again - text_chunk is already normalized in main.py
         text_chunk_clean = text_chunk
         system, user, sections = self._build_redflag_prompt(
             text_chunk=text_chunk_clean,
@@ -654,20 +672,64 @@ class LLMRunner:
         best_out: Optional[RedFlagChunkOutput] = None
         best_raw = ""
         best_count = -1
-        for _ in range(best_of):
+        all_attempts: list[tuple[RedFlagChunkOutput, str]] = []
+        # Try multiple times to get the best result (LLM can be non-deterministic)
+        # Always do all attempts to ensure we don't miss any findings
+        import logging
+        logger = logging.getLogger(__name__)
+        for attempt_num in range(best_of):
             out_i, raw_i = await self._call_json_and_raw(
                 self.cfg.model_stage2, system, user, RedFlagChunkOutput
             )
             count_i = len(out_i.findings or [])
+            all_attempts.append((out_i, raw_i))
+            logger.info(
+                f"LLM attempt {attempt_num + 1}/{best_of}: returned {count_i} findings. "
+                f"Categories: {[f.category for f in (out_i.findings or [])]}. "
+                f"Quotes: {[f.quote[:80] + '...' if f.quote and len(f.quote) > 80 else (f.quote or 'EMPTY') for f in (out_i.findings or [])]}"
+            )
             if count_i > best_count:
+                logger.info(
+                    f"Attempt {attempt_num + 1} is better (count {count_i} > {best_count}). "
+                    f"Using this result."
+                )
                 best_out = out_i
                 best_raw = raw_i
                 best_count = count_i
-            # Early stop once we have multiple findings.
-            if best_count >= 3:
-                break
+            else:
+                logger.info(
+                    f"Attempt {attempt_num + 1} has fewer findings (count {count_i} <= {best_count}). "
+                    f"Keeping previous best."
+                )
+        
+        # If we have multiple attempts, try to merge findings from all attempts
+        # to avoid losing findings that appear in different attempts
+        if len(all_attempts) > 1 and best_out:
+            all_findings = []
+            seen_quotes = set()
+            # Collect unique findings from all attempts (dedupe by quote)
+            for out_i, _ in all_attempts:
+                for f in (out_i.findings or []):
+                    quote_key = (f.category, (f.quote or "").strip().lower()[:100])
+                    if quote_key not in seen_quotes:
+                        seen_quotes.add(quote_key)
+                        all_findings.append(f)
+            
+            if len(all_findings) > best_count:
+                logger.info(
+                    f"Merging findings from all {best_of} attempts: "
+                    f"best attempt had {best_count}, merged has {len(all_findings)} unique findings. "
+                    f"Categories: {[f.category for f in all_findings]}"
+                )
+                best_out.findings = all_findings
+                best_count = len(all_findings)
+        
         out = best_out or RedFlagChunkOutput(findings=[])
         raw = best_raw
+        logger.info(
+            f"Final result after {best_of} attempts: {len(out.findings or [])} findings. "
+            f"Categories: {[f.category for f in (out.findings or [])]}"
+        )
         
         # Log what we got from parsing
         import logging
@@ -688,25 +750,25 @@ class LLMRunner:
         # Keep all findings (no truncation)
         
         # Log findings (only raw output, no text_chunk) for debugging
-        # (logger already imported above)
         if not out.findings:
             logger.warning(
                 f"LLM returned empty findings. Temperature={self.cfg.temperature}, "
                 f"Raw output length={len(raw)}"
             )
             if raw:
-                logger.warning(f"LLM raw output: {raw}")
+                logger.warning(f"LLM FULL raw output (empty findings): {raw}")
         else:
             logger.info(
                 f"LLM returned {len(out.findings)} findings. Raw output length={len(raw)}"
             )
             if raw:
-                logger.info(f"LLM raw output: {raw}")
-            # Log each finding's raw data
+                logger.info(f"LLM FULL raw output: {raw}")
+            # Log each finding's raw data with FULL quotes
             for i, f in enumerate(out.findings):
-                logger.debug(
-                    f"Finding {i+1}: category={f.category}, quote_length={len(f.quote or '')}, "
-                    f"quote_preview={f.quote[:100] if f.quote else 'EMPTY'}"
+                full_quote = f.quote or ""
+                logger.info(
+                    f"Finding {i+1}: category={f.category}, quote_length={len(full_quote)}, "
+                    f"quote_FULL={full_quote[:300] if full_quote else 'EMPTY'}..."
                 )
         prompt: Optional[dict[str, str]] = None
         if return_prompt:
@@ -758,9 +820,34 @@ class LLMRunner:
                 blob = extract_first_json_object(text) or ""
                 if not blob:
                     if schema == RedFlagChunkOutput:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(
+                            f"CRITICAL: No JSON object found in LLM response! "
+                            f"Raw text length: {len(text)}, "
+                            f"First 500 chars: {text[:500]}"
+                        )
                         return RedFlagChunkOutput(findings=[]), (last_text or "")
                     raise ValueError("No JSON object found in LLM response")
+                
+                # Log raw JSON blob before parsing
+                if schema == RedFlagChunkOutput:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Raw JSON blob extracted (length={len(blob)}): {blob[:1000]}")
+                
                 data = json.loads(blob)
+                
+                # Log parsed data before validation
+                if schema == RedFlagChunkOutput:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    findings_in_data = data.get('findings', []) if isinstance(data, dict) else []
+                    logger.info(
+                        f"JSON parsed successfully. Data has {len(findings_in_data)} findings. "
+                        f"Data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}. "
+                        f"Findings preview: {[f.get('category', 'NO_CATEGORY') + ': ' + (f.get('quote', '')[:50] or 'NO_QUOTE') for f in findings_in_data[:3]] if findings_in_data else 'EMPTY'}"
+                    )
                 try:
                     parsed = schema.model_validate(data)
                     # Log successful parsing for debugging
@@ -775,18 +862,25 @@ class LLMRunner:
                             f"Data findings type: {type(data.get('findings')) if isinstance(data, dict) else 'N/A'}, "
                             f"Parsed findings type: {type(parsed.findings)}"
                         )
-                        # If data has findings but parsed doesn't, this is a problem - trigger salvage
-                        if data_findings_count > 0 and findings_count == 0:
+                        # If data has findings but parsed has fewer, this is a problem - trigger salvage
+                        if data_findings_count > findings_count:
                             logger.error(
-                                f"CRITICAL: Data has {data_findings_count} findings but parsed has 0! "
-                                f"Data findings: {data.get('findings', [])[:2] if isinstance(data, dict) else 'N/A'}. "
+                                f"CRITICAL: Data has {data_findings_count} findings but parsed has only {findings_count}! "
+                                f"Lost {data_findings_count - findings_count} finding(s) during validation. "
+                                f"Data findings: {data.get('findings', [])[:3] if isinstance(data, dict) else 'N/A'}. "
                                 f"Triggering salvage logic..."
                             )
-                            # Force ValidationError to trigger salvage logic
+                            # Log each finding from data to see why validation failed
                             findings_data = data.get('findings', []) if isinstance(data, dict) else []
+                            for i, f_data in enumerate(findings_data):
+                                logger.error(
+                                    f"Data finding {i+1} that may be lost: "
+                                    f"category={f_data.get('category', 'MISSING')}, "
+                                    f"quote_preview={f_data.get('quote', '')[:100] if f_data.get('quote') else 'MISSING'}, "
+                                    f"keys={list(f_data.keys())}"
+                                )
                             if findings_data:
                                 # Manually trigger salvage by raising a ValidationError
-                                # ValidationError is already imported at top of file
                                 raise ValidationError.from_exception_data(
                                     "RedFlagChunkOutput",
                                     [{"type": "value_error", "loc": ("findings",), "msg": "Findings lost during validation", "input": findings_data}]
@@ -799,13 +893,31 @@ class LLMRunner:
                         f"Validation error parsing LLM response: {ve}. "
                         f"Data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}. "
                         f"Data findings count: {len(data.get('findings', [])) if isinstance(data, dict) else 0}. "
+                        f"Validation errors: {ve.errors() if hasattr(ve, 'errors') else 'N/A'}. "
                         f"Attempting to salvage findings..."
                     )
+                    # Log detailed validation errors
+                    if hasattr(ve, 'errors'):
+                        for err in ve.errors():
+                            logger.warning(
+                                f"Validation error detail: loc={err.get('loc')}, "
+                                f"type={err.get('type')}, msg={err.get('msg')}, "
+                                f"input_type={type(err.get('input'))}"
+                            )
                     if schema == RedFlagChunkOutput and "findings" in data:
                         findings_data = data.get("findings", [])
                         salvaged_findings = []
-                        for f_data in findings_data:
+                        logger.info(
+                            f"Attempting to salvage {len(findings_data)} findings from validation error. "
+                            f"Findings data: {[f.get('category', 'NO_CATEGORY') + ': ' + (f.get('quote', '')[:50] or 'NO_QUOTE') for f in findings_data[:3]] if findings_data else 'EMPTY'}"
+                        )
+                        for f_idx, f_data in enumerate(findings_data):
                             try:
+                                logger.info(
+                                    f"Salvaging finding {f_idx+1}/{len(findings_data)}: "
+                                    f"category={f_data.get('category', 'MISSING')}, "
+                                    f"quote_preview={f_data.get('quote', '')[:100] if f_data.get('quote') else 'MISSING'}"
+                                )
                                 # Normalize consequences_category to match Literal type exactly
                                 consequences_cat_raw = f_data.get("consequences_category", "Nothing")
                                 consequences_cat = "Nothing"  # Default
@@ -908,19 +1020,26 @@ class LLMRunner:
                             except Exception as salvage_err:
                                 import logging
                                 logger = logging.getLogger(__name__)
-                                logger.warning(
-                                    f"Failed to salvage finding: {salvage_err}. "
+                                logger.error(
+                                    f"Failed to salvage finding {f_idx+1}: {salvage_err}. "
+                                    f"Category: {f_data.get('category', 'MISSING')}, "
+                                    f"Quote preview: {f_data.get('quote', '')[:100] if f_data.get('quote') else 'MISSING'}, "
                                     f"consequences_cat was set to: '{consequences_cat}', "
                                     f"risk_assessment: {risk_assessment}, "
-                                    f"f_data consequences_category: '{f_data.get('consequences_category')}'"
+                                    f"f_data consequences_category: '{f_data.get('consequences_category')}', "
+                                    f"f_data keys: {list(f_data.keys())}"
                                 )
                                 import traceback
-                                logger.debug(f"Salvage error traceback: {traceback.format_exc()}")
+                                logger.error(f"Salvage error traceback: {traceback.format_exc()}")
                                 continue
                         if salvaged_findings:
                             import logging
                             logger = logging.getLogger(__name__)
-                            logger.info(f"Salvaged {len(salvaged_findings)} findings from validation error")
+                            logger.info(
+                                f"Salvaged {len(salvaged_findings)} findings from validation error. "
+                                f"Categories: {[f.category for f in salvaged_findings]}. "
+                                f"Quotes: {[f.quote[:100] if f.quote else 'EMPTY' for f in salvaged_findings]}"
+                            )
                         parsed = RedFlagChunkOutput(findings=salvaged_findings)
                     else:
                         # No findings to salvage, but validation failed - log the error
@@ -976,399 +1095,79 @@ class LLMRunner:
         )
         return parsed
 
-    def _normalize_stage1_category_id(self, cid: str) -> str:
-        cid = (cid or "").strip()
-        if cid.isdigit():
-            idx = int(cid)
-            if 1 <= idx <= len(self.category_ids):
-                return self.category_ids[idx - 1]
-        return cid
-
-    def _validate_and_clean_stage1(
+    async def regenerate_legal_references(
         self,
-        out: Stage1Output,
-        *,
-        max_categories: int,
-        allowed_evidence_indices: set[int],
-        t_router: float,
-        require_evidence: bool = True,
-    ) -> tuple[Stage1Output, list[str]]:
+        finding: RedFlagFindingLLM,
+        text_chunk: str,
+        section_path: str = "",
+    ) -> list[str]:
         """
-        Normalize numeric IDs, drop invalid IDs, enforce max_categories.
-        Returns (cleaned_out, invalid_ids).
+        Regenerate legal references for a finding that has invalid references.
+        
+        This is called when ALL legal_references are invalid, indicating LLM hallucination.
+        We ask the LLM to provide correct legal references based on the finding's category and quote.
+        
+        Args:
+            finding: The finding with invalid legal references
+            text_chunk: The original text chunk where the finding was found
+            section_path: Section path for context
+        
+        Returns:
+            List of regenerated legal references (may still be empty if LLM can't provide valid ones)
         """
-        invalid: list[str] = []
+        system = "You are a legal expert assistant. Provide ONLY valid UK legal references in JSON format."
+        
+        user = f"""A legal finding was identified in a contract, but the legal references provided were invalid/non-existent.
 
-        # Normalize and validate probs
-        probs: dict[str, float] = {}
-        cleaned_probs: list[Stage1Prob] = []
-        for p in out.category_probs or []:
-            cid = self._normalize_stage1_category_id(p.category_id)
-            if cid not in self.category_ids:
-                invalid.append(cid)
-                continue
-            val = float(p.prob)
-            probs[cid] = max(0.0, min(1.0, val))
-            cleaned_probs.append(Stage1Prob(category_id=cid, prob=probs[cid]))
-        out.category_probs = cleaned_probs
+FINDING DETAILS:
+- Category: {finding.category}
+- Quote: {finding.quote[:500]}
+- Explanation: {finding.explanation[:300]}
 
-        cleaned_cats: list[Stage1Category] = []
-        for item in out.categories or []:
-            cid = self._normalize_stage1_category_id(item.category_id)
-            if cid not in self.category_ids:
-                invalid.append(cid)
-                continue
-            # Prefer router prob if present; otherwise keep provided confidence.
-            conf = probs.get(cid, float(item.confidence))
-            if conf < t_router:
-                continue
-            item.category_id = cid
-            item.confidence = max(0.0, min(1.0, conf))
-            item.evidence_paragraph_indices = [
-                int(i) for i in (item.evidence_paragraph_indices or []) if int(i) in allowed_evidence_indices
-            ]
-            if require_evidence and not item.evidence_paragraph_indices:
-                continue
-            cleaned_cats.append(item)
-        out.categories = cleaned_cats[:max_categories]
-        return out, invalid
+INVALID REFERENCES (DO NOT USE THESE):
+{chr(10).join(f"- {ref}" for ref in (finding.legal_references or []))}
 
-    def _build_stage1_prompt(
-        self,
-        *,
-        main_paragraphs: list[Paragraph],
-        context_paragraphs: list[Paragraph],
-        section_path: str = "",
-        t_router: float,
-        topk_probs: int,
-        max_categories: int,
-        strict: bool,
-    ) -> tuple[str, str]:
-        system = "You are a contract analyst. Output STRICT JSON only."
-        allowed_ids = self.category_ids
-        allowed_ids_json = json.dumps(allowed_ids, ensure_ascii=False)
-        example_id = allowed_ids[0] if allowed_ids else ""
-        main_indices = [p.paragraph_index for p in main_paragraphs]
-        main_indices_json = json.dumps(main_indices)
+TEXT CHUNK (for context):
+{text_chunk[:2000]}
 
-        def fmt(ps: list[Paragraph], *, label: str) -> str:
-            lines = []
-            for p in ps:
-                lines.append(f"[{label} ¶{p.paragraph_index} p.{p.page}] {p.text}")
-            return "\n\n".join(lines).strip()
+TASK:
+Provide ONLY valid UK legal references that are relevant to this finding. 
+- Use real UK statutes (e.g., Consumer Rights Act 2015, Housing Act 2004, Tenant Fees Act 2019)
+- Use "UK common law" or "English common law" if applicable
+- Do NOT make up or invent statutes
+- If no valid references are relevant, return an empty list
 
-        context_block = fmt(context_paragraphs, label="CTX") if context_paragraphs else ""
-        main_block = fmt(main_paragraphs, label="MAIN")
-        section_prefix = f"Section path: {section_path}\n\n" if section_path else ""
+Return JSON format:
+{{
+  "legal_references": ["Consumer Rights Act 2015", "UK common law on penalty clauses"]
+}}
 
-        if strict:
-            user = f"""
-Task: multi-label screening of a contract SECTION (group of paragraphs).
-
-You MUST return STRICT JSON only.
-
-Allowed category_id values (MUST choose only from this list, copy exactly):
-{allowed_ids_json}
-
-Return STRICT JSON with:
-- category_probs: list of objects (top candidates), each with:
-  - category_id: string from the allowed list
-  - prob: float 0..1
-- unclear_prob: float 0..1 (how unsure/ambiguous this section is)
-- categories: list of objects (possibly empty), ONLY for categories with prob >= {t_router}, each with:
-  - category_id: string from the allowed list (never "unknown", never a number)
-  - severity: one of ["low","medium","high"]
-  - confidence: float 0..1 (router prob)
-  - rationale_short: <=220 chars
-  - evidence_paragraph_indices: list[int] (MUST be chosen from these paragraph indices: {main_indices_json}; max 5)
-
-Rules:
-- If nothing is relevant / the section is "safe" (e.g., operational details, product/deliverables description, generic background, contact info), return: {{"categories": []}}
-- category_probs: include at least the top {topk_probs} candidates, plus any category with prob >= {t_router}.
-- categories: include ALL categories with prob >= {t_router}; if too many, return at most {max_categories}.
-- Do NOT invent category ids (no "unknown"/"other"/etc).
-- For every returned category, you MUST point to at least 1 evidence paragraph index from the MAIN block.
-- If ALL probs < {t_router}, set categories=[] (abstain) and set unclear_prob high (e.g. 0.6+).
-
-Example:
-{{"category_probs": [{{"category_id": "{example_id}", "prob": 0.72}}], "unclear_prob": 0.1, "categories": [{{"category_id": "{example_id}", "severity": "medium", "confidence": 0.72, "rationale_short": "Short rationale.", "evidence_paragraph_indices": [{main_indices[0] if main_indices else 0}]}}]}}
-
-{section_prefix}Context (previous paragraphs, may help; do NOT use as evidence indices):
-{context_block}
-
-MAIN section paragraphs (use these for evidence indices):
-{main_block}
-""".strip()
-        else:
-            user = f"""
-Your task: quick multi-label screening of a contract SECTION (group of paragraphs) for potential red-flag clause types.
-
-Available categories (category_id -> name -> description):
-{self.categories_block}
-
-Return STRICT JSON with:
-- category_probs: list of objects (top candidates), each with:
-  - category_id: string from the allowed list
-  - prob: float 0..1
-- unclear_prob: float 0..1
-- categories: list of objects, ONLY for categories with prob >= {t_router}, each with:
-  - category_id: MUST be a STRING and one of {allowed_ids} (do NOT output a number)
-  - severity: one of ["low","medium","high"]
-  - confidence: float 0..1 (router prob)
-  - rationale_short: <=220 chars
-  - evidence_paragraph_indices: list[int] chosen from {main_indices_json} (max 5)
-
-Rules:
-- If no categories are relevant / the section is "safe" (e.g., operational details, product/deliverables description, generic background, contact info), return: {{"categories": []}}
-- category_probs: include at least the top {topk_probs} candidates, plus any category with prob >= {t_router}.
-- categories: include ALL categories with prob >= {t_router}; if too many, return at most {max_categories}.
-- Do not output anything except JSON.
-- For every returned category, you MUST point to at least 1 evidence paragraph index from the MAIN block.
-- If ALL probs < {t_router}, set categories=[] and set unclear_prob high (e.g. 0.6+).
-
-Example:
-{{"category_probs": [{{"category_id": "{example_id}", "prob": 0.72}}], "unclear_prob": 0.1, "categories": [{{"category_id": "{example_id}", "severity": "medium", "confidence": 0.72, "rationale_short": "Short rationale.", "evidence_paragraph_indices": [{main_indices[0] if main_indices else 0}]}}]}}
-
-{section_prefix}Context (previous paragraphs, may help; do NOT use as evidence indices):
-{context_block}
-
-MAIN section paragraphs (use these for evidence indices):
-{main_block}
-""".strip()
-        return system, user
-
-    async def stage1_for_block(
-        self,
-        *,
-        main_paragraphs: list[Paragraph],
-        context_paragraphs: list[Paragraph],
-        section_path: str = "",
-        t_router: float = 0.3,
-        topk_probs: int = 15,
-        max_categories: int = 10,
-    ) -> Stage1Output:
-        allowed_indices = {p.paragraph_index for p in main_paragraphs}
-        # Pass 1 (fast)
-        system, user = self._build_stage1_prompt(
-            main_paragraphs=main_paragraphs,
-            context_paragraphs=context_paragraphs,
-            section_path=section_path,
-            t_router=t_router,
-            topk_probs=topk_probs,
-            max_categories=max_categories,
-            strict=False,
-        )
-        out = await self._call_json(self.cfg.model_stage1, system, user, Stage1Output)
-        out, invalid = self._validate_and_clean_stage1(
-            out,
-            max_categories=max_categories,
-            allowed_evidence_indices=allowed_indices,
-            t_router=t_router,
-        )
-        if invalid:
-            system2, user2 = self._build_stage1_prompt(
-                main_paragraphs=main_paragraphs,
-                context_paragraphs=context_paragraphs,
-                section_path=section_path,
-                t_router=t_router,
-                topk_probs=topk_probs,
-                max_categories=max_categories,
-                strict=True,
+OUTPUT JSON:"""
+        
+        try:
+            # Use a simple schema for just legal references
+            class LegalRefsOutput(BaseModel):
+                legal_references: list[str] = []
+            
+            output, _ = await self._call_json_and_raw(
+                self.cfg.model_stage2, system, user, LegalRefsOutput, retries=1
             )
-            out2 = await self._call_json(self.cfg.model_stage1, system2, user2, Stage1Output)
-            out2, invalid2 = self._validate_and_clean_stage1(
-                out2,
-                max_categories=max_categories,
-                allowed_evidence_indices=allowed_indices,
-                t_router=t_router,
-            )
-            if not invalid2:
-                return out2
-        return out
-
-    async def stage1_for_block_with_raw(
-        self,
-        *,
-        main_paragraphs: list[Paragraph],
-        context_paragraphs: list[Paragraph],
-        section_path: str = "",
-        t_router: float = 0.3,
-        topk_probs: int = 15,
-        max_categories: int = 10,
-    ) -> tuple[Stage1Output, str]:
-        allowed_indices = {p.paragraph_index for p in main_paragraphs}
-        system, user = self._build_stage1_prompt(
-            main_paragraphs=main_paragraphs,
-            context_paragraphs=context_paragraphs,
-            section_path=section_path,
-            t_router=t_router,
-            topk_probs=topk_probs,
-            max_categories=max_categories,
-            strict=False,
-        )
-        out, raw = await self._call_json_and_raw(self.cfg.model_stage1, system, user, Stage1Output)
-        out, invalid = self._validate_and_clean_stage1(
-            out,
-            max_categories=max_categories,
-            allowed_evidence_indices=allowed_indices,
-            t_router=t_router,
-        )
-        if invalid:
-            system2, user2 = self._build_stage1_prompt(
-                main_paragraphs=main_paragraphs,
-                context_paragraphs=context_paragraphs,
-                section_path=section_path,
-                t_router=t_router,
-                topk_probs=topk_probs,
-                max_categories=max_categories,
-                strict=True,
-            )
-            out2, raw2 = await self._call_json_and_raw(self.cfg.model_stage1, system2, user2, Stage1Output)
-            out2, invalid2 = self._validate_and_clean_stage1(
-                out2,
-                max_categories=max_categories,
-                allowed_evidence_indices=allowed_indices,
-                t_router=t_router,
-            )
-            if not invalid2:
-                return out2, raw2
-        return out, raw
-
-    async def stage2(
-        self,
-        paragraph: Paragraph,
-        stage1: Stage1Category,
-        *,
-        context_text: str = "",
-        section_path: str = "",
-    ) -> Stage2Output:
-        system = "You are a senior contract lawyer. Output STRICT JSON only."
-        fewshot_block = ""
-        examples = self.fewshot_by_category.get(stage1.category_id) or []
-        if examples:
-            ex_lines = []
-            for i, ex in enumerate(examples[:3], start=1):
-                ex_lines.append(
-                    f"Reference {i} (CUAD snippet for this category)\n"
-                    f"Snippet:\n\"\"\"{ex.get('clause','')}\"\"\"\n"
-                    f"Typical evidence span (from CUAD QA): \"{ex.get('evidence','')}\"\n"
+            
+            # Validate the regenerated references
+            regenerated = output.legal_references or []
+            valid_regenerated = filter_valid_legal_references(regenerated)
+            
+            if len(regenerated) > len(valid_regenerated):
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Regenerated legal references still contain invalid ones. "
+                    f"Invalid: {[r for r in regenerated if r not in valid_regenerated]}"
                 )
-            fewshot_block = "\n".join(ex_lines).strip()
-        fewshot_section = ""
-        if fewshot_block:
-            fewshot_section = (
-                "Few-shot references (for pattern recognition only; do NOT copy evidence_quote from these):\n"
-                + fewshot_block
-                + "\n"
-            )
-        context_section = ""
-        if context_text.strip():
-            context_section = (
-                "Context (neighbor paragraphs in the same section; use to interpret, but quote evidence from the EVIDENCE paragraph only):\n"
-                + context_text.strip()
-                + "\n"
-            )
-        section_path_section = f"Section path: {section_path}\n" if section_path else ""
-        user = f"""
-Your task: produce a detailed red-flag finding for the paragraph, based on the stage-1 category.
-
-Category (id): {stage1.category_id}
-Stage-1 severity: {stage1.severity}
-Stage-1 rationale: {stage1.rationale_short}
-
-{fewshot_section}
-{section_path_section}
-{context_section}
-
-Return STRICT JSON with:
-- issue_title: <= 120 chars
-- what_is_wrong: <= 600 chars
-- recommendation: <= 400 chars
-- evidence_quote: <= 400 chars (a direct quote from the paragraph)
-- severity: one of ["low","medium","high"]
-- confidence: float 0..1
-- tags: optional list[str], max 6
-
-Rules:
-- evidence_quote MUST be copied from the EVIDENCE paragraph below (verbatim).
-- You MAY use the Context and Few-shot references to understand meaning, but evidence_quote MUST NOT be copied from them.
-- If you cannot find a good direct quote inside the EVIDENCE paragraph, pick the most relevant sentence fragment from the EVIDENCE paragraph anyway.
-- Do not output anything except JSON.
-
-Example output (format only):
-{{"issue_title":"...", "what_is_wrong":"...", "recommendation":"...", "evidence_quote":"...", "severity":"medium", "confidence":0.7, "tags":["..."]}}
-
-EVIDENCE paragraph:
-\"\"\"{paragraph.text}\"\"\"
-""".strip()
-        return await self._call_json(self.cfg.model_stage2, system, user, Stage2Output)
-
-    async def stage2_with_raw(
-        self,
-        paragraph: Paragraph,
-        stage1: Stage1Category,
-        *,
-        context_text: str = "",
-        section_path: str = "",
-    ) -> tuple[Stage2Output, str]:
-        system = "You are a senior contract lawyer. Output STRICT JSON only."
-        fewshot_block = ""
-        examples = self.fewshot_by_category.get(stage1.category_id) or []
-        if examples:
-            ex_lines = []
-            for i, ex in enumerate(examples[:3], start=1):
-                ex_lines.append(
-                    f"Reference {i} (CUAD snippet for this category)\n"
-                    f"Snippet:\n\"\"\"{ex.get('clause','')}\"\"\"\n"
-                    f"Typical evidence span (from CUAD QA): \"{ex.get('evidence','')}\"\n"
-                )
-            fewshot_block = "\n".join(ex_lines).strip()
-        fewshot_section = ""
-        if fewshot_block:
-            fewshot_section = (
-                "Few-shot references (for pattern recognition only; do NOT copy evidence_quote from these):\n"
-                + fewshot_block
-                + "\n"
-            )
-        context_section = ""
-        if context_text.strip():
-            context_section = (
-                "Context (neighbor paragraphs in the same section; use to interpret, but quote evidence from the EVIDENCE paragraph only):\n"
-                + context_text.strip()
-                + "\n"
-            )
-        section_path_section = f"Section path: {section_path}\n" if section_path else ""
-        user = f"""
-Your task: produce a detailed red-flag finding for the paragraph, based on the stage-1 category.
-
-Category (id): {stage1.category_id}
-Stage-1 severity: {stage1.severity}
-Stage-1 rationale: {stage1.rationale_short}
-
-{fewshot_section}
-{section_path_section}
-{context_section}
-
-Return STRICT JSON with:
-- issue_title: <= 120 chars
-- what_is_wrong: <= 600 chars
-- recommendation: <= 400 chars
-- evidence_quote: <= 400 chars (a direct quote from the paragraph)
-- severity: one of ["low","medium","high"]
-- confidence: float 0..1
-- tags: optional list[str], max 6
-
-Rules:
-- evidence_quote MUST be copied from the EVIDENCE paragraph below (verbatim).
-- You MAY use the Context and Few-shot references to understand meaning, but evidence_quote MUST NOT be copied from them.
-- If you cannot find a good direct quote inside the EVIDENCE paragraph, pick the most relevant sentence fragment from the EVIDENCE paragraph anyway.
-- Do not output anything except JSON.
-
-Example output (format only):
-{{"issue_title":"...", "what_is_wrong":"...", "recommendation":"...", "evidence_quote":"...", "severity":"medium", "confidence":0.7, "tags":["..."]}}
-
-EVIDENCE paragraph:
-\"\"\"{paragraph.text}\"\"\"
-""".strip()
-        return await self._call_json_and_raw(self.cfg.model_stage2, system, user, Stage2Output)
-
+            
+            return valid_regenerated
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to regenerate legal references: {e}")
+            return []

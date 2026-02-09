@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .aggregate import compute_summary, dedupe_findings
 from .fewshot import cuad_file_meta, load_or_build_fewshot, resolve_cuad_json_path
 from .llm import LLMConfig, LLMRunner, load_categories_payload, normalize_llm_text
+from .validate_legal_refs import filter_valid_legal_references as _filter_valid_legal_references
 from .models import (
     Finding,
     JobStatus,
@@ -29,7 +30,6 @@ from .models import (
     ResultDocument,
     ResultMeta,
     ResultPayload,
-    Stage1Category,
     UploadResponse,
 )
 from .parser import parse_pdf_to_paragraphs, _split_into_paragraphs
@@ -195,6 +195,10 @@ def _is_signature_paragraph(text: str) -> bool:
     if re.match(r"^\s*Attn:\s+", t, re.IGNORECASE) or re.match(r"^\s*Attention:\s+", t, re.IGNORECASE):
         return True
     
+    # Pattern: Contact labels like "Email:", "Phone:", "Fax:" etc.
+    if re.match(r"^\s*(Email|E-mail|Phone|Tel|Fax)\s*:\s*", t, re.IGNORECASE):
+        return True
+    
     # Pattern: Very short line (1-2 words) - likely garbage (name, address fragment, etc.)
     if word_count <= 2:
         return True
@@ -230,6 +234,14 @@ def _is_signature_paragraph(text: str) -> bool:
         capitalized_words = sum(1 for w in words if re.match(r"^[A-Z][a-z]+$", w))
         if has_date and capitalized_words >= 2 and capitalized_words >= word_count * 0.6:
             return True
+    
+    # Pattern: "Full name: ____", "Name: ____", "Print name: ____", "Date: ____", "Title: ____"
+    if re.match(r"^\s*(Full\s+name|Print\s+name|Name|Tenant\s+Name|Landlord\s+Name)\s*:\s*[_A-Za-z\s]*$", t, re.IGNORECASE):
+        return True
+    if re.match(r"^\s*Date\s*:\s*[_\d/\-\s]*$", t, re.IGNORECASE):
+        return True
+    if re.match(r"^\s*Title\s*:\s*[_A-Za-z\s]*$", t, re.IGNORECASE):
+        return True
     
     # Pattern: Very short line (1-3 words) that's just capitalized words (likely name)
     if 1 <= word_count <= 3:
@@ -348,7 +360,20 @@ def _approx_tokens(text: str) -> int:
 
 
 def _normalize_for_match(text: str) -> str:
-    t = (text or "").lower().strip()
+    """
+    Aggressive normalization for quote matching: first apply normalize_llm_text to ensure
+    consistency with the text that LLM sees, then collapse all whitespace to single space
+    and lowercase for robust matching.
+    
+    This ensures we always compare against the same normalized base text, preventing
+    mismatches from different normalization approaches.
+    """
+    # First normalize using the same function that processes text for LLM
+    # This ensures consistency: we're matching against the same normalized text
+    # that was sent to LLM and stored in paragraphs
+    normalized = normalize_llm_text(text or "")
+    # Then apply aggressive normalization for matching: lowercase + collapse whitespace
+    t = normalized.lower().strip()
     t = re.sub(r"\s+", " ", t)
     return t
 
@@ -409,55 +434,6 @@ def _heading_stack_to_path(stack: list[Heading]) -> str:
             continue
         cleaned.append(p)
     return " > ".join(cleaned)
-
-
-def _build_stage2_context(
-    *,
-    paragraphs: list[Paragraph],
-    idx: int,
-    section_by_idx: dict[int, tuple[int, int]],
-    sections: list[list[Paragraph]],
-    window: int,
-    max_chars: int,
-) -> str:
-    """
-    Build a compact context string around an evidence paragraph within its section.
-    Includes section heading (if present) + neighbors (prev/next).
-    """
-    loc = section_by_idx.get(idx)
-    if not loc:
-        return ""
-    sec_i, pos = loc
-    sec = sections[sec_i]
-    start = max(0, pos - window)
-    end = min(len(sec), pos + window + 1)
-
-    blocks: list[Paragraph] = []
-    if sec and _is_heading_paragraph(sec[0].text):
-        blocks.append(sec[0])
-    for p in sec[start:end]:
-        if p.paragraph_index == idx:
-            continue
-        blocks.append(p)
-
-    seen = set()
-    uniq: list[Paragraph] = []
-    for p in blocks:
-        if p.paragraph_index in seen:
-            continue
-        seen.add(p.paragraph_index)
-        uniq.append(p)
-
-    parts: list[str] = []
-    used = 0
-    for p in uniq:
-        line = f"[¶{p.paragraph_index} p.{p.page}] {p.text}".strip()
-        add = len(line) + 2
-        if used and used + add > max_chars:
-            break
-        parts.append(line)
-        used += add
-    return "\n\n".join(parts).strip()
 
 
 @app.exception_handler(HTTPException)
@@ -569,8 +545,6 @@ async def upload_example(
     final_api_key = (os.environ.get("NEBIUS_API_KEY") or os.environ.get("OPENAI_API_KEY") or "") if use_demo else (api_key or "").strip()
     if not final_api_key:
         raise HTTPException(status_code=400, detail="API key is required (or sign in as demo).")
-    if not (model or "").strip():
-        raise HTTPException(status_code=400, detail="Model is required.")
     llm_overrides = {
         "provider": (provider or "").strip().lower(),
         "api_key": final_api_key,
@@ -1002,7 +976,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             if mode in ("uk_two_stage", "uk"):
                 use_uk_redflags = True
                 single_classifier = True
-            elif mode in ("single_legacy", "legacy", "v1", "old"):
+            elif mode in ("single_legacy", "legacy", "v1", "old", "single"):
                 use_uk_redflags = False
                 single_classifier = True
             else:
@@ -1011,6 +985,10 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         else:
             use_uk_redflags = prompt_version in ("uk", "uk_v2", "v2_uk", "uk2")
             single_classifier = os.environ.get("SINGLE_CLASSIFIER", "1") == "1"
+        # Load category definitions from CSV
+        # To edit categories, modify:
+        # - Two-stage mode: data/category_definitions_new.csv
+        # - Legacy mode: data/category_descriptions.csv
         categories_csv = DATA_DIR / ("category_definitions_new.csv" if use_uk_redflags else "category_descriptions.csv")
         categories_version = "uk_tenancy_v1" if use_uk_redflags else "cuad_v1_41_from_csv"
         cats_payload = load_categories_payload(
@@ -1037,6 +1015,9 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         )
         uk_fewshot_text = ""
         if use_uk_redflags and single_classifier:
+            # Load few-shot examples from plain text file
+            # To edit few-shot examples, modify: data/fewshot_uk_redflags.txt
+            # Path can be overridden via UK_FEWSHOT_PATH environment variable
             uk_fewshot_path = Path(os.environ.get("UK_FEWSHOT_PATH", str(DATA_DIR / "fewshot_uk_redflags.txt")))
             if uk_fewshot_path.exists():
                 uk_fewshot_text = uk_fewshot_path.read_text(encoding="utf-8").strip()
@@ -1051,7 +1032,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 context_window=fewshot_window,
                 out_dir=fewshot_dir,
                 only_category_ids=only_fewshot_category_ids,
-            )
+        )
         cuad_path = resolve_cuad_json_path(DATA_DIR)
         cuad_meta = cuad_file_meta(cuad_path) if cuad_path.exists() else {"path": str(cuad_path)}
 
@@ -1228,75 +1209,13 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             section_heading_by_i[si] = h
             section_path_by_i[si] = path_by_idx.get(h.paragraph_index, "") if h else ""
 
-        ctx_n = int(os.environ.get("STAGE1_CONTEXT_PARAGRAPHS", "5"))
-        max_chars = _approx_chars_limit()
-
-        para_to_stage1: dict[int, list[Stage1Category]] = {p.paragraph_index: [] for p in paragraphs}
-
-        async def run_stage1_block(main_block: list[Paragraph], context_block: list[Paragraph]) -> None:
-            main_block = [p for p in main_block if len((p.text or "").split()) >= 5 and len((p.text or "").strip()) >= 30]
-            if not main_block:
-                return
-            block_path = path_by_idx.get(main_block[0].paragraph_index, "")
-            try:
-                if enable_debug:
-                    out, raw = await llm.stage1_for_block_with_raw(
-                        main_paragraphs=main_block,
-                        context_paragraphs=context_block,
-                        section_path=block_path,
-                        t_router=t_router,
-                        topk_probs=router_topk,
-                        max_categories=stage1_max_categories,
-                    )
-                else:
-                    out = await llm.stage1_for_block(
-                        main_paragraphs=main_block,
-                        context_paragraphs=context_block,
-                        section_path=block_path,
-                        t_router=t_router,
-                        topk_probs=router_topk,
-                        max_categories=stage1_max_categories,
-                    )
-                    raw = ""
-                for cat in out.categories:
-                    for idx in cat.evidence_paragraph_indices:
-                        if idx in para_to_stage1:
-                            para_to_stage1[idx].append(cat)
-                            if enable_debug:
-                                t = debug_by_idx.get(idx)
-                                if t is not None:
-                                    t["stage1"] = {"categories": [c.model_dump() for c in para_to_stage1[idx]]}
-                                    if raw:
-                                        t["stage1_raw"] = (t.get("stage1_raw", "") + "\n\n" + raw)[:4000]
-                                    # keep router probs visible in debug
-                                    t["stage1_router"] = {
-                                        "t_router": t_router,
-                                        "unclear_prob": out.unclear_prob,
-                                        "category_probs": [p.model_dump() for p in out.category_probs],
-                                    }
-                # Mark empty categories as skipped
-                if enable_debug:
-                    for p in main_block:
-                        if not para_to_stage1[p.paragraph_index]:
-                            t = debug_by_idx.get(p.paragraph_index)
-                            if t is not None and t.get("stage2_error") is None:
-                                t["stage2_error"] = "SKIPPED_NO_STAGE1_CATEGORIES"
-            except Exception as exc:
-                LOGGER.warning("Stage1 block failed: %s", str(exc))
-                if enable_debug:
-                    for p in main_block:
-                        t = debug_by_idx.get(p.paragraph_index)
-                        if t is not None:
-                            t["stage1_error"] = str(exc)[:2000]
-                            t["stage1_raw"] = str(exc)[:4000]
-                            t["stage2_error"] = "SKIPPED_DUE_TO_STAGE1_ERROR"
-
         window_tokens = int(os.environ.get("STAGE1_WINDOW_TOKENS", "1100"))
         stride_tokens = int(os.environ.get("STAGE1_STRIDE_TOKENS", "300"))
         edge_frac = float(os.environ.get("STAGE1_TRIGGER_EDGE_FRAC", "0.15"))
         llm_max_retries = int(os.environ.get("LLM_MAX_RETRIES", "3"))
         llm_retry_sleep = float(os.environ.get("LLM_RETRY_SLEEP", "0.8"))
         quote_repair_enabled = os.environ.get("LLM_QUOTE_REPAIR", "1") == "1"
+        max_chars = _approx_chars_limit()
 
         def approx_size(ps: list[Paragraph]) -> int:
             return sum(len((p.text or "")) + 40 for p in ps)
@@ -1305,20 +1224,11 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
         failed_windows: list[dict] = []
 
         if single_classifier:
-            # Single-classifier mode: each window is classified directly into up to 2 red-flag findings.
+            # Single-classifier mode: each window is classified directly into red-flag findings.
             await update_job(paths.db, job_id, stage="processing", progress=55)
 
             findings: list[Finding] = []
             window_findings: list[tuple[str, int, Finding]] = []
-
-            severity_by_category = {
-                "Termination For Convenience": "medium",
-                "Uncapped Liability": "high",
-                "Irrevocable Or Perpetual License": "medium",
-                "Most Favored Nation": "medium",
-                "Audit Rights": "low",
-                "Ip Ownership Assignment": "high",
-            }
 
             def recommend_for(cat: str) -> str:
                 if cat == "Uncapped Liability":
@@ -1441,6 +1351,17 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                 section_path=spath,
                                 return_prompt=enable_debug_window,
                             )
+                        # Log summary of LLM response
+                        findings_count = len(out.findings or [])
+                        if findings_count > 0:
+                            LOGGER.info(
+                                f"Window {window_id}: LLM returned {findings_count} findings. "
+                                f"Categories: {[f.category for f in (out.findings or [])]}"
+                            )
+                        else:
+                            LOGGER.debug(
+                                f"Window {window_id}: LLM returned 0 findings"
+                            )
                         break
                     except Exception as exc:
                         if _is_cancelled(job_id):
@@ -1537,63 +1458,34 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         },
                     )
 
-                # Log raw findings for debugging (only raw output, no text_chunk)
-                LOGGER.info(
-                    f"Window {window_id}: LLM returned {len(out.findings)} findings. "
-                    f"Raw output length={len(raw)}"
-                )
-                if not out.findings:
-                    LOGGER.warning(
-                        f"Window {window_id}: LLM returned EMPTY findings! "
-                        f"Temperature={llm.cfg.temperature}, "
-                        f"chunk_length={len(chunk_for_llm)}, section_path={spath}"
-                    )
-                    if raw:
-                        LOGGER.warning(f"Window {window_id} raw output (EMPTY FINDINGS): {raw[:2000]}")
-                else:
-                    if raw:
-                        LOGGER.info(f"Window {window_id} raw output: {raw[:2000]}")
-                    for j, f in enumerate(out.findings):
-                        LOGGER.info(
-                            f"Window {window_id}, finding {j+1}: category={f.category}, "
-                            f"quote_length={len(f.quote or '')}, quote_preview={f.quote[:150] if f.quote else 'EMPTY'}, "
-                            f"is_unfair={f.is_unfair}"
-                        )
-                
                 # Process all findings (no limit)
                 findings_to_process = out.findings
-                LOGGER.info(
-                    f"Window {window_id}: Processing {len(findings_to_process)} findings"
-                )
                 
                 for j, f in enumerate(findings_to_process):
-                    sev = severity_by_category.get(f.category)
-                    if not sev:
-                        sev_score = int(getattr(f.risk_assessment, "severity_of_consequences", 1) or 1)
-                        if sev_score >= 2:
-                            sev = "high"
-                        elif sev_score == 1:
-                            sev = "medium"
-                        else:
-                            sev = "low"
+                    # Map model-provided severity_of_consequences (0..3) to low/medium/high.
+                    sev_score = int(getattr(f.risk_assessment, "severity_of_consequences", 1) or 1)
+                    if sev_score >= 2:
+                        sev = "high"
+                    elif sev_score == 1:
+                        sev = "medium"
+                    else:
+                        sev = "low"
                     loc_para = None
                     evidence_quote = f.quote or ""
                     if not f.quote:
+                        # LLM did not return an evidence quote at all.
+                        # Skip this finding - without a quote, we can't highlight specific text,
+                        # and it's likely a false positive or the finding is not well-grounded.
                         LOGGER.warning(
-                            f"Window {window_id}, finding {j+1} ({f.category}): Empty quote, will use entire first paragraph as quote"
+                            f"Window {window_id}, finding {j+1} ({f.category}): "
+                            f"✗ SKIPPING - LLM did not provide a quote. Cannot highlight specific evidence."
                         )
-                        if chunk_paras:
-                            loc_para = chunk_paras[0]
-                            evidence_quote = (loc_para.text or "").strip()
+                        continue
                     else:
-                        # Paragraphs are already normalized via _normalize_paragraphs.
-                        # LLM receives normalized text, so its quote should also be normalized.
-                        # Try exact match first
+                        # Try exact match first (paragraphs are already normalized)
                         found_quote = False
                         for p in chunk_paras:
-                            # Paragraphs are already normalized, use as-is
                             para_text = p.text or ""
-                            # LLM quote should also be normalized (LLM receives normalized text)
                             if f.quote and f.quote in para_text:
                                 loc_para = p
                                 evidence_quote = f.quote
@@ -1601,110 +1493,241 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                 break
                         
                         if not found_quote:
-                            # Try case-insensitive match
-                            quote_lower = (f.quote or "").lower()
-                            if quote_lower:
+                            # Try normalized match to handle whitespace differences
+                            quote_norm = _normalize_for_match(f.quote or "")
+                            if quote_norm and len(quote_norm) > 20:  # Only for substantial quotes
                                 for p in chunk_paras:
-                                    para_text_lower = (p.text or "").lower()
-                                    if quote_lower in para_text_lower:
-                                        loc_para = p
-                                        evidence_quote = f.quote
-                                        found_quote = True
-                                        break
+                                    para_text_norm = _normalize_for_match(p.text or "")
+                                    if quote_norm in para_text_norm:
+                                        # Found in normalized text - extract actual quote from original paragraph
+                                        # This handles cases where quote is part of a longer sentence
+                                        para_text = p.text or ""
+                                        quote_words = quote_norm.split()
+                                        
+                                        # Try to find quote by matching key words (at least 5 words for reliability)
+                                        if len(quote_words) >= 5:
+                                            # Use first 5 words to find start position
+                                            search_start = " ".join(quote_words[:5]).lower()
+                                            para_lower = para_text.lower()
+                                            start_pos = para_lower.find(search_start)
+                                            
+                                            if start_pos >= 0:
+                                                # Found start, now find end using last 5 words
+                                                search_end = " ".join(quote_words[-5:]).lower()
+                                                end_pos = para_lower.find(search_end, start_pos)
+                                                
+                                                if end_pos > start_pos:
+                                                    # Extract actual quote from paragraph
+                                                    actual_end = end_pos + len(search_end)
+                                                    extracted_quote = para_text[start_pos:actual_end].strip()
+                                                    
+                                                    # Verify extracted quote is reasonable (at least 50% of original length)
+                                                    if len(extracted_quote) >= len(f.quote or "") * 0.5:
+                                                        loc_para = p
+                                                        evidence_quote = extracted_quote
+                                                        found_quote = True
+                                                        LOGGER.debug(
+                                                            f"Window {window_id}, finding {j+1}: "
+                                                            f"Extracted quote from paragraph using word matching"
+                                                        )
+                                                        break
+                                        
+                                        # If word-based extraction failed, try simpler approach:
+                                        # Find quote by matching first and last significant words
+                                        if not found_quote and len(quote_words) >= 3:
+                                            # Use first 3 and last 3 words
+                                            first_words = " ".join(quote_words[:3]).lower()
+                                            last_words = " ".join(quote_words[-3:]).lower()
+                                            para_lower = para_text.lower()
+                                            
+                                            start_pos = para_lower.find(first_words)
+                                            if start_pos >= 0:
+                                                end_pos = para_lower.find(last_words, start_pos)
+                                                if end_pos > start_pos:
+                                                    actual_end = end_pos + len(last_words)
+                                                    extracted_quote = para_text[start_pos:actual_end].strip()
+                                                    if len(extracted_quote) >= len(f.quote or "") * 0.5:
+                                                        loc_para = p
+                                                        evidence_quote = extracted_quote
+                                                        found_quote = True
+                                                        LOGGER.debug(
+                                                            f"Window {window_id}, finding {j+1}: "
+                                                            f"Extracted quote using simplified word matching"
+                                                        )
+                                                        break
+                                        
+                                        # Final fallback: if quote found in normalized text but extraction failed,
+                                        # use original LLM quote (it's better than highlighting entire paragraph)
+                                        if not found_quote:
+                                            loc_para = p
+                                            evidence_quote = f.quote  # Use original quote from LLM
+                                            found_quote = True
+                                            LOGGER.debug(
+                                                f"Window {window_id}, finding {j+1}: "
+                                                f"Using original LLM quote (found in normalized text but extraction failed)"
+                                            )
+                                            break
                         
-                        if not found_quote:
-                            # Try searching in adjacent paragraphs if quote spans across paragraph boundaries
-                            # First, try to find quote start or end in chunk_paras
-                            quote_start_words = f.quote.split()[:5] if f.quote and len(f.quote.split()) >= 5 else []
-                            quote_end_words = f.quote.split()[-5:] if f.quote and len(f.quote.split()) >= 5 else []
-                            
-                            if quote_start_words or quote_end_words:
-                                # Search in extended context: chunk_paras + adjacent paragraphs from section
-                                search_paras = list(chunk_paras)
-                                if all_sec_paras:
-                                    # Add previous paragraph if exists
-                                    if start_i > 0 and start_i <= len(all_sec_paras):
-                                        prev_para = all_sec_paras[start_i - 1]
-                                        if prev_para not in chunk_paras:
-                                            search_paras.insert(0, prev_para)
-                                    # Add next paragraph if exists
-                                    if end_i < len(all_sec_paras):
-                                        next_para = all_sec_paras[end_i]
-                                        if next_para not in chunk_paras:
-                                            search_paras.append(next_para)
-                                
-                                # Try to find quote spanning multiple paragraphs
-                                for p in search_paras:
-                                    para_text = (p.text or "").lower()
-                                    # Check if quote start or end is in this paragraph
-                                    quote_start_lower = " ".join(quote_start_words).lower() if quote_start_words else ""
-                                    quote_end_lower = " ".join(quote_end_words).lower() if quote_end_words else ""
-                                    
-                                    if (quote_start_lower and quote_start_lower in para_text) or \
-                                       (quote_end_lower and quote_end_lower in para_text):
-                                        # Found start or end, use this paragraph
-                                        loc_para = p
-                                        evidence_quote = f.quote
-                                        found_quote = True
-                                        LOGGER.info(
-                                            f"Window {window_id}, finding {j+1} ({f.category}): "
-                                            f"Found quote start/end in paragraph {p.paragraph_index}, using it."
-                                        )
-                                        break
-                        
-                        if not found_quote:
-                            # Try fuzzy match: look for key words from quote
-                            if f.quote and len(f.quote) > 20:
-                                quote_words = set(w.lower() for w in f.quote.split() if len(w) > 3)
-                                best_match = None
-                                best_score = 0
-                                # Search in extended context if available
-                                search_paras = list(chunk_paras)
-                                if all_sec_paras:
-                                    if start_i > 0 and start_i <= len(all_sec_paras):
-                                        prev_para = all_sec_paras[start_i - 1]
-                                        if prev_para not in chunk_paras:
-                                            search_paras.insert(0, prev_para)
-                                    if end_i < len(all_sec_paras):
-                                        next_para = all_sec_paras[end_i]
-                                        if next_para not in chunk_paras:
-                                            search_paras.append(next_para)
-                                
-                                for p in search_paras:
-                                    # Paragraphs are already normalized
-                                    para_words = set(w.lower() for w in (p.text or "").split() if len(w) > 3)
-                                    # Count matching significant words
-                                    matches = len(quote_words & para_words)
-                                    if matches > best_score and matches >= len(quote_words) * 0.5:  # At least 50% of words match
-                                        best_score = matches
-                                        best_match = p
-                                
-                                if best_match:
-                                    loc_para = best_match
-                                    evidence_quote = f.quote
-                                    LOGGER.info(
-                                        f"Window {window_id}, finding {j+1} ({f.category}): "
-                                        f"Used fuzzy match to locate quote (matched {best_score}/{len(quote_words)} words). "
-                                        f"Using original LLM quote - frontend will attempt case-insensitive match."
-                                    )
+                        # If quote not found in individual paragraphs, try searching in combined window text.
+                        # This handles cases where the quote spans multiple paragraphs (separated by "\n\n").
+                        if not found_quote and f.quote and chunk_paras:
+                            separator = "\n\n"
+                            body_raw = separator.join((p.text or "") for p in chunk_paras).strip()
+
+                            # Pre-compute character spans of each paragraph inside body_raw.
+                            raw_spans: list[tuple[Paragraph, int, int]] = []
+                            cur_pos = 0
+                            for idx_p, p in enumerate(chunk_paras):
+                                t = p.text or ""
+                                start = cur_pos
+                                end = start + len(t)
+                                raw_spans.append((p, start, end))
+                                if idx_p < len(chunk_paras) - 1:
+                                    cur_pos = end + len(separator)
                                 else:
-                                    LOGGER.warning(
-                                        f"Window {window_id}, finding {j+1} ({f.category}): "
-                                        f"Could not locate quote in paragraphs: {f.quote[:100]}. "
-                                        f"Using entire first paragraph as quote."
+                                    cur_pos = end
+
+                            # 1) Exact search in combined raw text.
+                            if f.quote in body_raw:
+                                quote_pos = body_raw.find(f.quote)
+                                if quote_pos >= 0:
+                                    for para_obj, start, end in raw_spans:
+                                        if start <= quote_pos < end:
+                                            loc_para = para_obj
+                                            evidence_quote = f.quote
+                                            found_quote = True
+                                            break
+
+                            # 2) Normalized search in combined text to handle whitespace differences.
+                            if not found_quote:
+                                para_norms: list[str] = [
+                                    _normalize_for_match(p.text or "") for p in chunk_paras
+                                ]
+                                body_raw_norm = " ".join(para_norms)
+                                quote_norm = _normalize_for_match(f.quote or "")
+                                if quote_norm and quote_norm in body_raw_norm:
+                                    quote_pos = body_raw_norm.find(quote_norm)
+                                    if quote_pos >= 0:
+                                        norm_spans: list[tuple[Paragraph, int, int]] = []
+                                        cur_pos = 0
+                                        for idx_p, (p, p_norm) in enumerate(zip(chunk_paras, para_norms)):
+                                            start = cur_pos
+                                            end = start + len(p_norm)
+                                            norm_spans.append((p, start, end))
+                                            if idx_p < len(para_norms) - 1:
+                                                cur_pos = end + 1  # one space between normalized paragraphs
+                                            else:
+                                                cur_pos = end
+
+                                        for para_obj, start, end in norm_spans:
+                                            if start <= quote_pos < end:
+                                                loc_para = para_obj
+                                                evidence_quote = f.quote  # Use original quote from LLM
+                                                found_quote = True
+                                                break
+                        
+                        if not found_quote and quote_repair_enabled and f.quote:
+                            search_paras = list(chunk_paras)
+                            if all_sec_paras:
+                                if start_i > 0 and start_i <= len(all_sec_paras):
+                                    prev_para = all_sec_paras[start_i - 1]
+                                    if prev_para not in chunk_paras:
+                                        search_paras.insert(0, prev_para)
+                                if end_i < len(all_sec_paras):
+                                    next_para = all_sec_paras[end_i]
+                                    if next_para not in chunk_paras:
+                                        search_paras.append(next_para)
+                            
+                            for p in search_paras:
+                                try:
+                                    repaired = await llm.repair_quote_from_paragraph(
+                                        paragraph_text=p.text or "", target_quote=f.quote
                                     )
-                                    if chunk_paras:
-                                        loc_para = chunk_paras[0]
-                                        evidence_quote = (loc_para.text or "").strip() or f.quote
-                            else:
+                                    if repaired:
+                                        para_text_norm = _normalize_for_match(p.text or "")
+                                        repaired_norm = _normalize_for_match(repaired)
+                                        original_norm = _normalize_for_match(f.quote or "")
+                                        # Only accept repaired quote if:
+                                        # 1. It's found in paragraph text
+                                        # 2. It's not much longer than original (max 2x length to avoid "babbling")
+                                        # 3. It's not much shorter than original (min 0.5x length to avoid truncation)
+                                        if (repaired_norm and repaired_norm in para_text_norm and
+                                            len(repaired) <= len(f.quote or "") * 2 and
+                                            len(repaired) >= len(f.quote or "") * 0.5):
+                                            loc_para = p
+                                            evidence_quote = repaired
+                                            found_quote = True
+                                            repair_logs.append(
+                                                {
+                                                    "finding_index": j + 1,
+                                                    "category": f.category,
+                                                    "original_quote": f.quote,
+                                                    "repaired_quote": repaired,
+                                                    "matched": True,
+                                                    "method": "llm_repair_search",
+                                                }
+                                            )
+                                            break
+                                        else:
+                                            LOGGER.warning(
+                                                f"Window {window_id}, finding {j+1} ({f.category}): "
+                                                f"LLM repair returned quote that does not appear in paragraph text. Ignoring repair."
+                                            )
+                                except Exception as exc:
+                                    LOGGER.debug(
+                                        f"Window {window_id}, finding {j+1} ({f.category}): "
+                                        f"LLM repair failed for paragraph {p.paragraph_index}: {str(exc)[:200]}"
+                                    )
+                                    continue
+                        
+                        if not found_quote:
+                            # Last attempt: try to find quote by matching key words even if exact match fails
+                            # This handles cases where quote is part of a longer sentence with different punctuation
+                            quote_norm = _normalize_for_match(f.quote or "")
+                            if quote_norm and len(quote_norm) > 30:  # Only for substantial quotes
+                                quote_words = quote_norm.split()
+                                # Use first 5-7 words to find the paragraph containing the quote
+                                if len(quote_words) >= 5:
+                                    search_phrase = " ".join(quote_words[:min(7, len(quote_words))])
+                                    for p in chunk_paras:
+                                        para_text_norm = _normalize_for_match(p.text or "")
+                                        if search_phrase in para_text_norm:
+                                            # Found paragraph - try to extract actual quote
+                                            para_text = p.text or ""
+                                            para_lower = para_text.lower()
+                                            
+                                            # Find start using first 5 words
+                                            first_5 = " ".join(quote_words[:5]).lower()
+                                            start_pos = para_lower.find(first_5)
+                                            
+                                            if start_pos >= 0:
+                                                # Find end using last 5 words
+                                                last_5 = " ".join(quote_words[-5:]).lower()
+                                                end_pos = para_lower.find(last_5, start_pos)
+                                                
+                                                if end_pos > start_pos:
+                                                    actual_end = end_pos + len(last_5)
+                                                    extracted_quote = para_text[start_pos:actual_end].strip()
+                                                    
+                                                    # Verify it's reasonable (at least 60% of original length)
+                                                    if len(extracted_quote) >= len(f.quote or "") * 0.6:
+                                                        loc_para = p
+                                                        evidence_quote = extracted_quote
+                                                        found_quote = True
+                                                        LOGGER.info(
+                                                            f"Window {window_id}, finding {j+1}: "
+                                                            f"✓ Found quote using key word matching: extracted {len(extracted_quote)} chars"
+                                                        )
+                                                        break
+                            
+                            if not found_quote:
                                 LOGGER.warning(
                                     f"Window {window_id}, finding {j+1} ({f.category}): "
-                                    f"Could not locate quote in paragraphs: {f.quote[:100] if f.quote else 'EMPTY'}. "
-                                    f"Using entire first paragraph as quote."
+                                    f"✗ SKIPPING - Could not locate quote in paragraphs after ALL search methods: "
+                                    f"{f.quote[:100] if f.quote else 'EMPTY'}. "
+                                    f"To avoid highlighting entire paragraphs without specific evidence, this finding is skipped."
                                 )
-                                if chunk_paras:
-                                    loc_para = chunk_paras[0]
-                                    evidence_quote = (loc_para.text or "").strip() or f.quote
+                                continue  # Skip this finding - don't use fallback that highlights entire paragraph
 
                     cat_id = llm.resolve_category_id(f.category)
                     cat_name = llm.category_name_by_id.get(cat_id, f.category)
@@ -1716,51 +1739,55 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                     if not loc_para:
                         if chunk_paras:
                             loc_para = chunk_paras[0]
-                            if not evidence_quote:
-                                evidence_quote = (loc_para.text or "").strip() or f.quote or ""
-                            LOGGER.warning(
-                                f"Window {window_id}, finding {j+1} ({f.category}): No location found, using first paragraph of chunk as fallback"
-                            )
                         else:
                             LOGGER.error(
-                                f"Window {window_id}, finding {j+1} ({f.category}): No paragraphs in chunk, cannot assign location."
+                                f"Window {window_id}, finding {j+1} ({f.category}): "
+                                f"✗ CRITICAL: No loc_para and no chunk_paras! Cannot create finding. "
+                                f"Quote: {f.quote[:100] if f.quote else 'EMPTY'}"
                             )
-                            new_finding = Finding(
-                                finding_id=f"{window_id}_f{j+1}",
-                                category_id=cat_id,
-                                category_name=cat_name,
-                                severity=sev,  # type: ignore[arg-type]
-                                confidence=0.8,
-                                issue_title=f.category,
-                                what_is_wrong=what,
-                                explanation=f.explanation,
-                                recommendation=revision_expl or recommend_for(f.category),
-                                evidence_quote=evidence_quote,
-                                is_unfair=bool(f.is_unfair),
-                                legal_references=list(f.legal_references or [])[:6],
-                                possible_consequences=f.possible_consequences,
-                                risk_assessment=f.risk_assessment,
-                                consequences_category=f.consequences_category,
-                                risk_category=f.risk_category,
-                                revised_clause=revised_clause,
-                                revision_explanation=revision_expl,
-                                suggested_follow_up=f.suggested_follow_up,
-                                paragraph_bbox=None,
-                                location={"page": 0, "paragraph_index": 0},
-                            )
-                            window_findings.append((window_id, 0, new_finding))
-                            continue
+                            continue  # Skip this finding
                     
-                    # Add finding with location
-                    if loc_para and evidence_quote:
+                    if not evidence_quote:
+                        # Final safeguard: prefer the original LLM quote if present.
+                        # If the quote is empty, fall back to a short snippet from the paragraph
+                        # instead of the entire paragraph to avoid over-broad evidence.
+                        if f.quote:
+                            evidence_quote = f.quote
+                        elif loc_para:
+                            para_text = (loc_para.text or "").strip()
+                            evidence_quote = para_text[:300]
+                        else:
+                            evidence_quote = ""
+                    
+                    # Skip findings without evidence quotes - if LLM couldn't provide a quote,
+                    # it's likely a false positive or the finding is not well-grounded.
+                    # We don't want to highlight entire paragraphs without specific evidence.
+                    if not evidence_quote or not evidence_quote.strip():
+                        LOGGER.warning(
+                            f"Window {window_id}, finding {j+1} ({f.category}): "
+                            f"✗ SKIPPING - no evidence quote available. LLM did not provide quote and "
+                            f"we could not locate it in paragraphs."
+                        )
+                        continue
+                    
+                    if loc_para and evidence_quote and quote_repair_enabled:
                         para_text = loc_para.text or ""
                         if _normalize_for_match(evidence_quote) not in _normalize_for_match(para_text):
-                            if quote_repair_enabled:
-                                try:
-                                    repaired = await llm.repair_quote_from_paragraph(
-                                        paragraph_text=para_text, target_quote=evidence_quote
-                                    )
-                                    if repaired:
+                            try:
+                                repaired = await llm.repair_quote_from_paragraph(
+                                    paragraph_text=para_text, target_quote=evidence_quote
+                                )
+                                if repaired:
+                                    para_text_norm = _normalize_for_match(para_text)
+                                    repaired_norm = _normalize_for_match(repaired)
+                                    original_norm = _normalize_for_match(evidence_quote)
+                                    # Only accept repaired quote if:
+                                    # 1. It's found in paragraph text
+                                    # 2. It's not much longer than original (max 2x length to avoid "babbling")
+                                    # 3. It's not much shorter than original (min 0.5x length to avoid truncation)
+                                    if (repaired_norm and repaired_norm in para_text_norm and
+                                        len(repaired) <= len(evidence_quote) * 2 and
+                                        len(repaired) >= len(evidence_quote) * 0.5):
                                         repair_logs.append(
                                             {
                                                 "finding_index": j + 1,
@@ -1777,11 +1804,16 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                                 "finding_index": j + 1,
                                                 "category": f.category,
                                                 "original_quote": evidence_quote,
-                                                "repaired_quote": "",
+                                                "repaired_quote": repaired,
                                                 "matched": False,
+                                                "error": "Repaired quote not found in paragraph (normalized)",
                                             }
                                         )
-                                except Exception as exc:
+                                        LOGGER.warning(
+                                            f"Window {window_id}, finding {j+1} ({f.category}): "
+                                            f"LLM repair returned quote that does not appear in paragraph text. Ignoring repair."
+                                        )
+                                else:
                                     repair_logs.append(
                                         {
                                             "finding_index": j + 1,
@@ -1789,16 +1821,89 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                                             "original_quote": evidence_quote,
                                             "repaired_quote": "",
                                             "matched": False,
-                                            "error": str(exc)[:200],
                                         }
                                     )
-                                    LOGGER.warning(
-                                        "Quote repair failed for window %s: %s", window_id, str(exc)[:200]
+                            except Exception as exc:
+                                repair_logs.append(
+                                    {
+                                        "finding_index": j + 1,
+                                        "category": f.category,
+                                        "original_quote": evidence_quote,
+                                        "repaired_quote": "",
+                                        "matched": False,
+                                        "error": str(exc)[:200],
+                                    }
+                                )
+                                LOGGER.warning(
+                                    "Quote repair failed for window %s: %s", window_id, str(exc)[:200]
+                                )
+                    
+                    original_refs = f.legal_references or []
+                    valid_refs = _filter_valid_legal_references(original_refs)
+                    
+                    # If ALL references are invalid, this may indicate LLM hallucination.
+                    # Option 1: Skip the finding entirely (controlled by env var)
+                    # Option 2: Try to regenerate legal references once (controlled by env var, default: enabled)
+                    skip_if_all_refs_invalid = os.environ.get("SKIP_FINDING_IF_ALL_REFS_INVALID", "0") == "1"
+                    regenerate_if_all_invalid = os.environ.get("REGENERATE_LEGAL_REFS_IF_ALL_INVALID", "1") == "1"
+                    
+                    if len(original_refs) > 0 and len(valid_refs) == 0:
+                        invalid_refs = original_refs
+                        
+                        if skip_if_all_refs_invalid:
+                            LOGGER.warning(
+                                f"Window {window_id}, finding {j+1} ({f.category}): "
+                                f"✗ SKIPPING - ALL legal references are invalid (hallucinated?): {invalid_refs}"
+                            )
+                            continue  # Skip this finding
+                        
+                        # Try to regenerate legal references once
+                        if regenerate_if_all_invalid:
+                            try:
+                                LOGGER.info(
+                                    f"Window {window_id}, finding {j+1} ({f.category}): "
+                                    f"Attempting to regenerate legal references (invalid: {invalid_refs})"
+                                )
+                                regenerated_refs = await llm.regenerate_legal_references(
+                                    finding=f,
+                                    text_chunk=text_chunk,
+                                    section_path=spath,
+                                )
+                                if regenerated_refs:
+                                    valid_refs = regenerated_refs
+                                    LOGGER.info(
+                                        f"Window {window_id}, finding {j+1} ({f.category}): "
+                                        f"✓ Regenerated {len(regenerated_refs)} valid legal reference(s): {regenerated_refs}"
                                     )
+                                else:
+                                    LOGGER.warning(
+                                        f"Window {window_id}, finding {j+1} ({f.category}): "
+                                        f"⚠️ Regeneration failed or returned no valid references. "
+                                        f"Keeping finding but without legal references."
+                                    )
+                            except Exception as exc:
+                                LOGGER.warning(
+                                    f"Window {window_id}, finding {j+1} ({f.category}): "
+                                    f"Failed to regenerate legal references: {exc}. "
+                                    f"Keeping finding but without legal references."
+                                )
+                        else:
+                            LOGGER.warning(
+                                f"Window {window_id}, finding {j+1} ({f.category}): "
+                                f"⚠️ ALL legal references are invalid (hallucinated?): {invalid_refs}. "
+                                f"Keeping finding but without legal references."
+                            )
+                    elif len(original_refs) > len(valid_refs):
+                        invalid_refs = [r for r in original_refs if r not in valid_refs]
+                        LOGGER.warning(
+                            f"Window {window_id}, finding {j+1} ({f.category}): "
+                            f"Filtered out {len(invalid_refs)} invalid legal reference(s): {invalid_refs}"
+                        )
+                    
                     new_finding = Finding(
                         finding_id=f"{window_id}_f{j+1}",
-                                category_id=cat_id,
-                                category_name=cat_name,
+                        category_id=cat_id,
+                        category_name=cat_name,
                         severity=sev,  # type: ignore[arg-type]
                         confidence=0.8,
                         issue_title=f.category,
@@ -1807,7 +1912,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         recommendation=revision_expl or recommend_for(f.category),
                         evidence_quote=evidence_quote,
                         is_unfair=bool(f.is_unfair),
-                        legal_references=list(f.legal_references or [])[:6],
+                        legal_references=valid_refs[:6],
                         possible_consequences=f.possible_consequences,
                         risk_assessment=f.risk_assessment,
                         consequences_category=f.consequences_category,
@@ -1815,8 +1920,8 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         revised_clause=revised_clause,
                         revision_explanation=revision_expl,
                         suggested_follow_up=f.suggested_follow_up,
-                        paragraph_bbox=loc_para.bbox,
-                        location={"page": int(loc_para.page), "paragraph_index": int(loc_para.paragraph_index)},
+                        paragraph_bbox=loc_para.bbox if loc_para else None,
+                        location={"page": int(loc_para.page) if loc_para else 0, "paragraph_index": int(loc_para.paragraph_index) if loc_para else 0},
                     )
                     para_idx = int(loc_para.paragraph_index) if loc_para else 0
                     window_findings.append((window_id, para_idx, new_finding))
@@ -1826,11 +1931,6 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                             "category": new_finding.category_name,
                             "evidence_quote": new_finding.evidence_quote,
                         }
-                    )
-                    LOGGER.info(
-                        f"Window {window_id}, finding {j+1} ({f.category}): "
-                        f"Added finding to list. Total findings so far: {len(window_findings)}. "
-                        f"Quote preview: {evidence_quote[:80] if evidence_quote else 'EMPTY'}..."
                     )
 
             window_tasks: list[asyncio.Task] = []
@@ -1891,135 +1991,31 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         exp_s = max(0, min(exp_s, len(sec_body)))
                         exp_e = max(exp_s, min(exp_e, len(sec_body)))
                         
-                        # CRITICAL: Before creating expanded, check for headings from different sections
-                        # This prevents mixing paragraphs from different sections (e.g., 5.6 and 5.8)
-                        # Get current section number for comparison
-                        current_section_heading = section_heading_by_i.get(si)
-                        current_num = None
-                        if current_section_heading:
-                            current_heading = parse_heading(current_section_heading.text or "", max_len=160)
-                            if current_heading:
-                                label = current_heading.label
-                                num_match = re.search(r"(\d+(?:\.\d+)*)", label)
-                                if num_match:
-                                    current_num = num_match.group(1)
-                        
-                        # Check paragraphs in exp_s:exp_e range for headings from different sections
-                        # Pattern 1: "5.8. Title. Body..." - heading with period, then body starts with capital
-                        heading_start_pattern1 = re.compile(
-                            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Za-z\s]{2,}?)\s*\.\s+[A-Z]",
-                            re.IGNORECASE
-                        )
-                        # Pattern 2: "6. INTERPRETATION... 6.1 Assignment..." - heading, then subsection number
-                        heading_start_pattern2 = re.compile(
-                            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Z\s]{5,}?)\s+(\d+\.\d+)",
-                            re.IGNORECASE
-                        )
-                        
-                        # Find the first paragraph that looks like a heading from a different section
-                        # Also stop at address/contact info blocks that typically appear before new sections
+                        # Before creating expanded, optionally stop at obvious signature/contact blocks
+                        # inside the same section to avoid dragging long address blocks into windows.
                         trimmed_exp_e = exp_e
                         for i in range(exp_s, exp_e):
                             p = sec_body[i]
                             para_text = (p.text or "").strip()
                             
-                            # Check if it's address/contact info - these often appear before new sections
-                            # and shouldn't be in the current section's window
+                            # Check if it's address/contact info / signature block – these often
+                            # appear before new sections and don't contain useful content for LLM.
                             if _is_signature_paragraph(para_text):
-                                # This looks like address/contact info - stop here to avoid mixing sections
                                 trimmed_exp_e = i
-                                LOGGER.warning(
-                                    f"Window {window_id}: Found address/contact info at paragraph {p.paragraph_index} "
-                                    f"(text: {para_text[:60]}...), trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                )
                                 break
-                            
-                            # Check if entire paragraph is a heading
-                            if _is_heading_paragraph(para_text):
-                                # This is a heading - stop here
-                                trimmed_exp_e = i
-                                LOGGER.warning(
-                                    f"Window {window_id}: Found heading at paragraph {p.paragraph_index}, trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                )
-                                break
-                            
-                            # Check if paragraph starts with heading pattern
-                            m = heading_start_pattern1.match(para_text) or heading_start_pattern2.match(para_text)
-                            if m:
-                                num_part = m.group(1)
-                                title_part = m.group(2).strip()
-                                if title_part.endswith('.'):
-                                    title_part = title_part[:-1].strip()
-                                
-                                # Check if title looks like a heading
-                                words = title_part.split()[:10]
-                                if words:
-                                    uppercase_words = sum(1 for w in words if w.isupper() and len(w) > 1)
-                                    titlecase_words = sum(1 for w in words if w and w[0].isupper() and not w.isupper())
-                                    uppercase_ratio = uppercase_words / len(words) if words else 0
-                                    titlecase_ratio = titlecase_words / len(words) if words else 0
-                                    is_short_heading = len(words) <= 5
-                                    is_uppercase_heading = uppercase_ratio >= 0.5
-                                    is_title_case_short = (2 <= len(words) <= 4 and titlecase_ratio >= 0.5)
-                                    
-                                    if is_uppercase_heading or is_short_heading or is_title_case_short:
-                                        # Compare section numbers
-                                        if current_num:
-                                            if num_part != current_num:
-                                                is_subsection = num_part.startswith(current_num + ".")
-                                                is_parent_section = current_num.startswith(num_part + ".")
-                                                if not is_subsection and not is_parent_section:
-                                                    # Different section - stop here (don't include this paragraph)
-                                                    trimmed_exp_e = i
-                                                    LOGGER.warning(
-                                                        f"Window {window_id}: Found different section '{num_part}' (current: '{current_num}') "
-                                                        f"at paragraph {p.paragraph_index} (text: {para_text[:60]}...), "
-                                                        f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                                    )
-                                                    break
-                                        else:
-                                            # No current section number, but found a heading - stop to be safe
-                                            trimmed_exp_e = i
-                                            LOGGER.warning(
-                                                f"Window {window_id}: Found heading '{num_part}' but current section has no number, "
-                                                f"trimming exp_e from {exp_e} to {trimmed_exp_e}"
-                                            )
-                                            break
                         
                         exp_e = trimmed_exp_e
                         
-                        # Ensure exp_e is still valid after trimming
+                        # Ensure exp_e is still valid after trimming.
                         # If trimming made exp_e <= exp_s, fall back to using just the main block (s:e)
-                        # This ensures we don't skip windows that contain important content
+                        # to avoid losing content entirely.
                         if exp_e <= exp_s:
-                            LOGGER.warning(
-                                f"Window {window_id}: exp_e ({exp_e}) <= exp_s ({exp_s}) after trimming. "
-                                f"Falling back to main block s={s}, e={e}"
-                            )
-                            # Use main block instead of expanded window
                             exp_s = s
                             exp_e = e
-                            # Ensure we have at least one paragraph
                             if exp_e <= exp_s:
                                 exp_e = min(exp_s + 1, len(sec_body))
                         
                         expanded = sec_body[exp_s:exp_e]
-                        while expanded and approx_size(expanded) > max_chars:
-                            expanded = expanded[:-1]
-                        
-                        # Ensure expanded is not empty - if it is, use at least the main block
-                        if not expanded:
-                            LOGGER.warning(
-                                f"Window {window_id}: expanded is empty after trimming. Using main block s={s}, e={e}"
-                            )
-                            expanded = sec_body[s:e]
-                            if not expanded:
-                                # Last resort: use at least one paragraph
-                                if s < len(sec_body):
-                                    expanded = [sec_body[s]]
-                                else:
-                                    LOGGER.warning(f"Window {window_id}: Cannot create window, skipping")
-                                    continue
                         
                         # Final safety check: remove any headings that might have slipped in
                         if expanded:
@@ -2072,33 +2068,67 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         start_i = exp_s
                         end_i = exp_s + len(expanded) if expanded else exp_s
                         window_id = f"w_{sec_body[s].paragraph_index:04d}_{sec_body[min(e-1, len(sec_body)-1)].paragraph_index:04d}"
-                        
-                        # Log window info for debugging
-                        if expanded:
-                            para_indices = [p.paragraph_index for p in expanded]
-                            LOGGER.debug(
-                                f"Window {window_id}: section {si} ({sec_path}), "
-                                f"expanded from {exp_s} to {exp_e} (len={len(expanded)}), "
-                                f"paragraph indices: {para_indices[:5]}{'...' if len(para_indices) > 5 else ''}"
+
+                        # If the expanded window is larger than max_chars, split it into
+                        # multiple overlapping subwindows instead of trimming away content.
+                        total_size = approx_size(expanded)
+                        if total_size > max_chars and expanded:
+                            overlap = 1  # overlap in paragraphs between subwindows
+                            part_index = 0
+                            # Work in indices relative to sec_body
+                            sub_start = start_i
+                            while sub_start < end_i:
+                                sub_paras: list[Paragraph] = []
+                                sub_end = sub_start
+                                while sub_end < end_i and approx_size(sub_paras + [sec_body[sub_end]]) <= max_chars:
+                                    sub_paras.append(sec_body[sub_end])
+                                    sub_end += 1
+                                if not sub_paras:
+                                    # Ensure progress even if a single paragraph is very large
+                                    sub_end = min(end_i, sub_start + 1)
+                                sub_window_id = f"{window_id}_p{part_index:02d}"
+                                t = asyncio.create_task(
+                                    classify_window(
+                                        sec_body,
+                                        sub_start,
+                                        sub_end,
+                                        window_id=sub_window_id,
+                                        main_start=s,
+                                        main_end=e,
+                                        sec_heading=sec_heading,
+                                        sec_path=sec_path,
+                                        all_sec_paras=sec_body,  # Full section for cross-paragraph quote search
+                                    )
+                                )
+                                _register_job_task(job_id, t)
+                                window_tasks.append(t)
+                                part_index += 1
+                                if sub_end >= end_i:
+                                    break
+                                # Move start forward with a small overlap to avoid gaps.
+                                sub_start = max(sub_end - overlap, sub_start + 1)
+                        else:
+                            t = asyncio.create_task(
+                                classify_window(
+                                    sec_body,
+                                    start_i,
+                                    end_i,
+                                    window_id=window_id,
+                                    main_start=s,
+                                    main_end=e,
+                                    sec_heading=sec_heading,
+                                    sec_path=sec_path,
+                                    all_sec_paras=sec_body,  # Pass full section for cross-paragraph quote search
+                                )
                             )
-                        
-                        t = asyncio.create_task(
-                            classify_window(
-                                sec_body, start_i, end_i, window_id=window_id,
-                                main_start=s, main_end=e,
-                                sec_heading=sec_heading, sec_path=sec_path,
-                                all_sec_paras=sec_body,  # Pass full section for cross-paragraph quote search
-                            )
-                        )
-                        _register_job_task(job_id, t)
-                        window_tasks.append(t)
+                            _register_job_task(job_id, t)
+                            window_tasks.append(t)
                         last_main_s = s
                         last_main_e = e
 
             done = 0
             succeeded = 0
             failed = 0
-            # Use asyncio.wait to check cancellation more frequently
             pending = set(window_tasks)
             while pending:
                 # Check cancellation before waiting
@@ -2155,158 +2185,23 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 findings = [t[2] for t in window_findings]
             else:
                 findings = []
+            # Dedupe once after collecting all findings
             findings = dedupe_findings(findings)
-        else:
-            # Legacy mode (stage1 router + stage2) kept for fallback.
-            stage1_tasks = []
-            for sec in sections:
-                sec_body = [p for p in sec if not _is_heading_paragraph(p.text)]
-                if not sec_body:
-                    continue
-                starts: list[int] = [0]
-                while True:
-                    prev = starts[-1]
-                    need = stride_tokens
-                    i = prev
-                    while i < len(sec_body) and need > 0:
-                        need -= _approx_tokens(sec_body[i].text)
-                        i += 1
-                    if i >= len(sec_body):
-                        break
-                    starts.append(i)
-                for s in starts:
-                    t = 0
-                    e = s
-                    while e < len(sec_body) and t < window_tokens:
-                        t += _approx_tokens(sec_body[e].text)
-                        e += 1
-                    if e <= s:
-                        e = min(len(sec_body), s + 1)
-                    main_block = sec_body[s:e]
-                    ctx_start = max(0, s - ctx_n)
-                    context_block = sec_body[ctx_start:s]
-                    while context_block and approx_size(context_block) > (max_chars // 2):
-                        context_block = context_block[1:]
-                    joined = "\n\n".join(p.text for p in main_block)
-                    near_start, near_end = _find_trigger_edges(joined, edge_frac)
-                    exp_s, exp_e = _extend_window_by_stride(
-                        sec_body, s, e, stride_tokens=stride_tokens, extend_left=near_start, extend_right=near_end
-                    )
-                    expanded = sec_body[exp_s:exp_e]
-                    while expanded and approx_size(expanded) > max_chars:
-                        expanded = expanded[:-1]
-                    t = asyncio.create_task(run_stage1_block(expanded, context_block))
-                    _register_job_task(job_id, t)
-                    stage1_tasks.append(t)
-            for coro in asyncio.as_completed(stage1_tasks):
-                try:
-                    await coro
-                except asyncio.CancelledError:
-                    pass
-            LOGGER.info("Job %s stage1 complete", job_id)
-            await update_job(paths.db, job_id, stage="stage2", progress=55)
-            findings = []
-            # (legacy stage2 code remains unchanged below)
-            cat_map = {c["id"]: c["name"] for c in cats_payload.get("categories", [])}
-            stage2_ctx_n = int(os.environ.get("STAGE2_CONTEXT_PARAGRAPHS", "3"))
-            stage2_ctx_max_chars = int(os.environ.get("STAGE2_MAX_CONTEXT_CHARS", "6000"))
-            async def stage2_one(p: Paragraph, s1: Stage1Category):
-                ctx = _build_stage2_context(
-                    paragraphs=paragraphs,
-                    idx=p.paragraph_index,
-                    section_by_idx=section_by_idx,
-                    sections=sections,
-                    window=stage2_ctx_n,
-                    max_chars=stage2_ctx_max_chars,
-                )
-                spath = path_by_idx.get(p.paragraph_index, "")
-                try:
-                    if enable_debug:
-                        out, raw = await llm.stage2_with_raw(p, s1, context_text=ctx, section_path=spath)
-                        trace = debug_by_idx.get(p.paragraph_index)
-                        if trace is not None:
-                            trace["stage2_runs"].append(
-                                {
-                                    "category_id": s1.category_id,
-                                    "stage1": s1.model_dump(),
-                                    "stage2": out.model_dump(),
-                                    "stage2_raw": (raw or "")[:4000],
-                                    "stage2_error": None,
-                                    "stage2_context": ctx[:4000],
-                                    "section_path": spath,
-                                }
-                            )
-                    else:
-                        out = await llm.stage2(p, s1, context_text=ctx, section_path=spath)
-                except Exception as exc:
-                    LOGGER.warning("Stage2 failed for paragraph %s: %s", p.paragraph_index, str(exc))
-                    if enable_debug:
-                        trace = debug_by_idx.get(p.paragraph_index)
-                        if trace is not None:
-                            trace["stage2_runs"].append(
-                                {
-                                    "category_id": s1.category_id,
-                                    "stage1": s1.model_dump(),
-                                    "stage2": None,
-                                    "stage2_raw": "",
-                                    "stage2_error": str(exc)[:2000],
-                                    "stage2_context": ctx[:4000],
-                                    "section_path": spath,
-                                }
-                            )
-                    return None
-                finding_id = f"f_{p.paragraph_index:04d}_{s1.category_id}"
-                return Finding(
-                    finding_id=finding_id,
-                    category_id=s1.category_id,
-                    category_name=cat_map.get(s1.category_id, s1.category_id),
-                    severity=out.severity,
-                    confidence=float(out.confidence),
-                    is_unfair=out.severity in ("medium", "high"),
-                    issue_title=out.issue_title,
-                    what_is_wrong=out.what_is_wrong,
-                    explanation=out.what_is_wrong,
-                    recommendation=out.recommendation,
-                    evidence_quote=out.evidence_quote,
-                    legal_references=[],
-                    possible_consequences="",
-                    risk_assessment={"severity_of_consequences": 0, "degree_of_legal_violation": 0},
-                    consequences_category="Nothing",
-                    risk_category="Nothing",
-                    revised_clause="",
-                    revision_explanation="",
-                    suggested_follow_up="",
-                    paragraph_bbox=p.bbox,
-                    location={"page": p.page, "paragraph_index": p.paragraph_index},
-                )
-            stage2_tasks = []
-            para_by_idx = {p.paragraph_index: p for p in paragraphs}
-            for idx, cats in para_to_stage1.items():
-                if not cats:
-                    continue
-                p = para_by_idx.get(idx)
-                if p is None:
-                    continue
-                for cat in cats:
-                    t = asyncio.create_task(stage2_one(p, cat))
-                    _register_job_task(job_id, t)
-                    stage2_tasks.append(t)
-            done = 0
-            for coro in asyncio.as_completed(stage2_tasks):
-                try:
-                    item = await coro
-                except asyncio.CancelledError:
-                    item = None
-                done += 1
-                if item is not None:
-                    findings.append(item)
-                if stage2_tasks:
-                    prog = 55 + int(40 * (done / max(1, len(stage2_tasks))))
-                    await update_job(paths.db, job_id, stage="stage2", progress=min(95, prog))
 
-        LOGGER.info(f"Job {job_id}: Before dedupe: {len(findings)} findings")
+        LOGGER.info(f"Job {job_id}: Total findings before dedupe: {len(findings)}")
+        if findings:
+            LOGGER.info(
+                f"Job {job_id}: Findings before dedupe: "
+                f"{[(f.category_name, f.evidence_quote[:60] if f.evidence_quote else 'EMPTY') for f in findings]}"
+            )
+        # Final dedupe pass (in case findings were added from different code paths)
         findings = dedupe_findings(findings)
-        LOGGER.info(f"Job {job_id}: After dedupe: {len(findings)} findings")
+        LOGGER.info(f"Job {job_id}: Total findings after dedupe: {len(findings)}")
+        if findings:
+            LOGGER.info(
+                f"Job {job_id}: Findings after dedupe: "
+                f"{[(f.category_name, f.evidence_quote[:60] if f.evidence_quote else 'EMPTY') for f in findings]}"
+            )
         summary = compute_summary(findings)
         LOGGER.info("Job %s findings=%s risk_score=%s", job_id, len(findings), summary.risk_score)
         # Log findings details for debugging

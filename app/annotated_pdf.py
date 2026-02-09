@@ -122,10 +122,13 @@ def build_annotated_text_pdf(
         # Get quotes for this paragraph
         para_quotes = quotes_by_para.get(int(p.paragraph_index), [])
         ranges = _find_quote_ranges_with_ids(text, para_quotes)
-        if para_quotes and not ranges:
-            # If quote matching fails, highlight the full paragraph for each finding.
-            for _q, qid in para_quotes:
-                ranges.append((0, len(text), qid))
+        # If quote matching fails, do NOT highlight the full paragraph.
+        # This prevents highlighting entire paragraphs when the specific quote cannot be found.
+        # Instead, the finding will be shown in the table but without highlighting.
+        # if para_quotes and not ranges:
+        #     # OLD BEHAVIOR: highlight full paragraph - REMOVED to prevent false highlighting
+        #     # for _q, qid in para_quotes:
+        #     #     ranges.append((0, len(text), qid))
         
         # If quote not found in current paragraph, try searching in adjacent paragraphs
         # (for quotes that span across paragraph boundaries)

@@ -130,6 +130,9 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         if _looks_like_sentence(raw):
             return None
         num = m.group("num")
+        # Do not treat subsection numbers like "5.1" / "5.2" as headings at all.
+        if "." in (num or ""):
+            return None
         rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
         return Heading(level=1, label=f"Section {num}", title=rest, raw=raw)
 
@@ -138,6 +141,9 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         if _looks_like_sentence(raw):
             return None
         num = m.group("num")
+        # Do not treat subsection numbers like "5.1" / "5.2" as headings at all.
+        if "." in (num or ""):
+            return None
         rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
         return Heading(level=1, label=f"Clause {num}", title=rest, raw=raw)
 
@@ -146,6 +152,9 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         if _looks_like_sentence(raw):
             return None
         num = m.group("num")
+        # Do not treat subsection numbers like "5.1" / "5.2" as headings at all.
+        if "." in (num or ""):
+            return None
         # treat like section-level
         rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
         return Heading(level=1, label=f"§ {num}", title=rest, raw=raw)
@@ -153,17 +162,21 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
     m = _RE_NUMBERED.match(raw)
     if m and m.group("num"):
         num = m.group("num")
+        # Do not treat pure decimal numbers like "5.1" / "5.2" as headings at all.
+        # We only want top-level numeric markers ("1.", "2)") to be headings.
+        if "." in (num or ""):
+            return None
         tail = m.group("tail") or ""
         title = (m.group("title") or "").strip()
         title = title.strip(" \t-–—:") or ""
         title = title or None
-        # Level is dot-depth (+1), plus one extra if it has (a)
-        level = num.count(".") + 2  # 2 means "subsection-ish"
+        # Level 2 means "top-level numeric heading" (e.g., "1.", "2)")
+        level = 2
         if tail:
             level += 1
         if _looks_like_sentence(raw):
-            # Allow bare markers like "1." / "1.1" even if sentence end is "."
-            if re.match(r"^\s*\d+(?:\.\d+)*[.)]?\s*$", raw):
+            # Allow bare markers like "1." even if sentence end is "."
+            if re.match(r"^\s*\d+[.)]?\s*$", raw):
                 return Heading(level=level, label=num + tail, title=None, raw=raw)
             return None
         return Heading(level=level, label=num + tail, title=title, raw=raw)

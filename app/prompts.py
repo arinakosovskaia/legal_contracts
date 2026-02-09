@@ -6,22 +6,36 @@ Edit this file to modify how the model analyzes contracts.
 
 For legal experts: Focus on the sections marked with "EDIT HERE" comments.
 
-Structure:
-- get_redflag_system_prompt(): Role definition for the LLM
-- get_redflag_user_prompt_template(): Main instructions and rules
-- build_redflag_fewshot_example(): Format for few-shot examples
-- format_redflag_prompt(): Assembles the complete prompt
+QUICK REFERENCE - Where to Edit What:
+=====================================
+
+TWO-STAGE MODE (UK Red Flags - Production):
+- Router system prompt: get_uk_router_system_prompt() - line ~301
+- Router user prompt: get_uk_router_user_prompt_template() - line ~316
+- Classifier system prompt: get_uk_redflag_system_prompt() - line ~399
+- Classifier user prompt: get_uk_redflag_user_prompt_template() - line ~416
+- Few-shot examples: data/fewshot_uk_redflags.txt (plain text file)
+- Category definitions: data/category_definitions_new.csv
+
+LEGACY MODE (Single-Stage - Debug):
+- System prompt: get_redflag_system_prompt() - line ~34
+- User prompt: get_redflag_user_prompt_template() - line ~42
+- Few-shot examples: Built from CUAD dataset (see app/fewshot.py)
+- Category definitions: data/category_descriptions.csv
+
+See PROMPTS_README.md for detailed editing instructions.
 """
 
 import json
-import os
 from typing import Any
 
 
 def get_redflag_system_prompt() -> str:
     """
-    System prompt for the red flag classifier.
+    System prompt for the red flag classifier (legacy single-stage mode).
     This sets the role and behavior of the LLM.
+    
+    EDIT HERE: Modify the role description or behavior instructions.
     """
     return "You are a legal clause classifier for red flag clause types. Output STRICT JSON only."
 
@@ -53,7 +67,7 @@ You must return:
 
 Rules
 - Evidence MUST be copied verbatim from the provided TEXT CHUNK. Do not paraphrase.
-- Return up to {max_findings} findings per chunk (only the most salient).
+- Return ALL findings that match any of the categories. Do not skip findings just because they seem less important - if a category matches, include it.
 - If nothing matches, return {{"findings": []}}.
 - If you suspect a category but cannot quote clear evidence from the chunk, do NOT guess; return no finding for that category.
 - Keep reasoning brief (1–3 bullets) and tied directly to the evidence.
@@ -263,7 +277,6 @@ def format_redflag_prompt(
     """
     section_prefix = f"CONTEXT PREFIX: {section_path}\n\n" if section_path else ""
     
-    max_findings = int(os.environ.get("MAX_FINDINGS_PER_CHUNK", "6"))
     user_prompt = get_redflag_user_prompt_template().format(
         categories_list=categories_list,
         section_path=section_path or "(none)",
@@ -271,7 +284,6 @@ def format_redflag_prompt(
         fewshot_section=fewshot_section,
         section_prefix=section_prefix,
         text_chunk=text_chunk,
-        max_findings=max_findings,
     )
     
     sections = {
@@ -286,6 +298,12 @@ def format_redflag_prompt(
 
 
 def get_uk_router_system_prompt() -> str:
+    """
+    System prompt for the UK router (first stage of two-stage classification).
+    This sets the role and behavior of the LLM for category routing.
+    
+    EDIT HERE: Modify the role description or behavior instructions.
+    """
     return (
         'You are a high-recall clause router for UK residential tenancy "red flag" categories.\n'
         "Your goal is to select ALL categories that might apply, even weakly, based ONLY on the TEXT CHUNK.\n"
@@ -295,6 +313,16 @@ def get_uk_router_system_prompt() -> str:
 
 
 def get_uk_router_user_prompt_template() -> str:
+    """
+    User prompt template for the UK router (first stage).
+    
+    This prompt tells the router LLM:
+    - What categories to consider
+    - How to select categories (high recall)
+    - What to return (category, confidence, trigger quotes, rationale)
+    
+    EDIT HERE: Modify the instructions, rules, or output schema for the router.
+    """
     return """CANDIDATE CATEGORIES (select any that might apply):
 {categories_list}
 
@@ -345,6 +373,12 @@ def format_uk_router_prompt(
     category_definitions: str,
     text_chunk: str,
 ) -> tuple[str, dict[str, Any]]:
+    """
+    Format the complete UK router prompt (first stage).
+    
+    This function assembles the prompt from the template.
+    To modify the prompt content, edit get_uk_router_user_prompt_template() above.
+    """
     section_prefix = ""
     user_prompt = get_uk_router_user_prompt_template().format(
         categories_list=categories_list,
@@ -362,6 +396,12 @@ def format_uk_router_prompt(
 
 
 def get_uk_redflag_system_prompt() -> str:
+    """
+    System prompt for the UK red flag classifier (second stage of two-stage classification).
+    This sets the role and behavior of the LLM for detailed analysis.
+    
+    EDIT HERE: Modify the role description or behavior instructions.
+    """
     return (
         'You are a UK residential tenancy contract "red flag" detector for tenants.\n'
         "Your job is to identify potentially unlawful or unfair terms based ONLY on the provided TEXT CHUNK.\n"
@@ -373,6 +413,18 @@ def get_uk_redflag_system_prompt() -> str:
 
 
 def get_uk_redflag_user_prompt_template() -> str:
+    """
+    User prompt template for the UK red flag classifier (second stage).
+    
+    This is the core instruction that tells the classifier LLM:
+    - What categories to analyze (only those selected by the router)
+    - What to return (quote, reasoning, legal analysis, risk assessment, etc.)
+    - The rules for classification and false-positive defense
+    - Risk scoring rubric
+    - Output JSON schema
+    
+    EDIT HERE: Modify the instructions, rules, risk scoring, or output schema.
+    """
     return """TASK
 Knowing only the provided TEXT CHUNK, identify whether it contains any unfair/unlawful tenant-facing terms that match one or more of these categories:
 {categories_list}
@@ -382,7 +434,7 @@ CURRENT DOCUMENT LOCATION (context only; NOT evidence):
 
 OUTPUT REQUIREMENTS
 Return STRICT JSON ONLY. No Markdown. No extra keys. Must match schema exactly.
-Return up to {max_findings} findings per chunk (only the most salient / highest risk).
+Return ALL findings that match any of the categories. Do not skip findings - if a category matches, include it.
 If nothing matches, return {{"findings": []}}.
 
 DEFINITIONS
@@ -470,8 +522,14 @@ def format_uk_redflag_prompt(
     fewshot_section: str,
     text_chunk: str,
 ) -> tuple[str, dict[str, Any]]:
+    """
+    Format the complete UK classifier prompt (second stage).
+    
+    This function assembles the prompt from the template.
+    To modify the prompt content, edit get_uk_redflag_user_prompt_template() above.
+    To modify few-shot examples, edit data/fewshot_uk_redflags.txt (plain text file).
+    """
     section_prefix = ""
-    max_findings = int(os.environ.get("MAX_FINDINGS_PER_CHUNK", "6"))
     user_prompt = get_uk_redflag_user_prompt_template().format(
         categories_list=categories_list,
         section_path=section_path or "(none)",
@@ -479,7 +537,6 @@ def format_uk_redflag_prompt(
         fewshot_section=fewshot_section,
         section_prefix=section_prefix,
         text_chunk=text_chunk,
-        max_findings=max_findings,
     )
     sections = {
         "context_prefix": section_path or "",

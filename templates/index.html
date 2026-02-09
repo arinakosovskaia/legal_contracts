@@ -328,7 +328,11 @@
       .clause-block { font-size: 14px; line-height: 1.55; }
       table { border-collapse: collapse; width: 100%; font-size: 14px; border-radius: var(--radius); overflow: hidden; }
       th, td { border: 1px solid var(--border); padding: 12px 14px; vertical-align: top; color: var(--ink); }
-      th { background: var(--card); position: sticky; top: 0; font-weight: 600; font-size: 13px; text-transform: none; letter-spacing: 0.01em; }
+      th { background: var(--card); position: sticky; top: 0; font-weight: 600; font-size: 13px; text-transform: none; letter-spacing: 0.01em; z-index: 10; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
+      #findingsTable thead th:first-child { min-width: 300px; width: 300px; }
+      #findingsTable tbody td:first-child { min-width: 300px; width: 300px; }
+      #findingsTable thead th:nth-child(8) { min-width: 400px; width: 400px; }
+      #findingsTable tbody td:nth-child(8) { min-width: 400px; width: 400px; }
       tr:hover td { background: rgba(255,255,255,0.02); }
       .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
       .high { background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); }
@@ -692,20 +696,25 @@
             <button id="downloadAnnotatedPdfBtn" type="button" class="btn secondary" style="display:none;" onclick="downloadAnnotatedPdf()">Download Annotated PDF</button>
           </div>
           <div style="max-height: 560px; overflow: auto; margin-top: 24px;">
-            <table id="findingsTable">
-              <thead>
-                <tr>
-                  <th>Quote</th>
-                  <th>Explanation (UK law)</th>
-                  <th>Legal references</th>
-                  <th>Possible consequences</th>
-                  <th>Severity of consequences (0–3)</th>
-                  <th>Consequences category</th>
-                  <th>Risk category</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+            <div style="overflow-x: auto;">
+              <table id="findingsTable">
+                <thead>
+                  <tr>
+                    <th>Quote</th>
+                    <th>Explanation (UK law)</th>
+                    <th>Legal references</th>
+                    <th>Possible consequences</th>
+                    <th>Severity of consequences (0–3)</th>
+                    <th>Consequences category</th>
+                    <th>Risk category</th>
+                    <th>Revised clause</th>
+                    <th>Revision explanation</th>
+                    <th>Suggested Follow-Up for Tenant</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
           <div id="rawText" style="margin-top: 16px; display: none;">
             <h4>Raw result (JSON)</h4>
@@ -744,7 +753,7 @@
         const refs = (f.legal_references || []).map(r => `<li>${escapeHtml(r)}</li>`).join("");
         box.innerHTML = `
           <div class="detail-field">
-            <div class="label">Suspicious line</div>
+            <div class="label">Quote</div>
             <pre class="value">${escapeHtml(f.evidence_quote || "")}</pre>
           </div>
           <div class="detail-field">
@@ -756,7 +765,7 @@
             <ul class="value">${refs || "<li>(none)</li>"}</ul>
           </div>
           <div class="detail-field">
-            <div class="label">Consequences</div>
+            <div class="label">Possible consequences</div>
             <div class="value">${escapeHtml(f.possible_consequences || "")}</div>
           </div>
           <div class="detail-field">
@@ -764,12 +773,24 @@
             <div class="value">${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</div>
           </div>
           <div class="detail-field">
-            <div class="label">Revised clause (if possible)</div>
+            <div class="label">Consequences category</div>
+            <div class="value">${escapeHtml(f.consequences_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Risk category</div>
+            <div class="value">${escapeHtml(f.risk_category || "")}</div>
+          </div>
+          <div class="detail-field">
+            <div class="label">Revised clause</div>
             <pre class="value">${escapeHtml(f.revised_clause || "")}</pre>
           </div>
           <div class="detail-field">
+            <div class="label">Revision explanation</div>
+            <div class="value">${escapeHtml(f.revision_explanation || "")}</div>
+          </div>
+          <div class="detail-field">
             <div class="label">Suggested Follow-Up for Tenant</div>
-            <div class="value">${escapeHtml(f.suggested_follow_up || "(none)")}</div>
+            <div class="value">${escapeHtml(f.suggested_follow_up || "")}</div>
           </div>
         `;
         setClauseHeader(f);
@@ -1392,6 +1413,9 @@
             <td>${escapeHtml(f.risk_assessment?.severity_of_consequences ?? "")}</td>
             <td>${escapeHtml(f.consequences_category || "")}</td>
             <td>${escapeHtml(f.risk_category || "")}</td>
+            <td><pre style="margin:0; white-space:pre-wrap;">${escapeHtml(f.revised_clause || "")}</pre></td>
+            <td>${escapeHtml(f.revision_explanation || "")}</td>
+            <td>${escapeHtml(f.suggested_follow_up || "")}</td>
           `;
           tbody.appendChild(tr);
         }
@@ -1983,16 +2007,19 @@
               }
             }
 
-            // If a finding wasn't matched by quote but has a paragraph location, highlight the full paragraph.
-            for (const f of findings) {
-              const fid = f.finding_id;
-              if (!fid || highlightedFindings.has(fid) || matchedFindingIds.has(fid)) continue;
-              const locIdx = f.location?.paragraph_index;
-              if (locIdx == null) continue;
-              if (locIdx === p.paragraph_index) {
-                ranges.push({ start: 0, end: (p.text || "").length, id: fid });
-              }
-            }
+            // REMOVED: If a finding wasn't matched by quote, do NOT highlight the full paragraph.
+            // This prevents highlighting entire paragraphs when the specific quote cannot be found.
+            // The finding will still be shown in the table, but without highlighting.
+            // OLD BEHAVIOR (removed):
+            // for (const f of findings) {
+            //   const fid = f.finding_id;
+            //   if (!fid || highlightedFindings.has(fid) || matchedFindingIds.has(fid)) continue;
+            //   const locIdx = f.location?.paragraph_index;
+            //   if (locIdx == null) continue;
+            //   if (locIdx === p.paragraph_index) {
+            //     ranges.push({ start: 0, end: (p.text || "").length, id: fid });
+            //   }
+            // }
             
             if (ranges.length) {
               for (const r of ranges) {
@@ -3046,13 +3073,16 @@
         
         const findings = currentResult.findings;
         const headers = [
-          "Quote",
+          "Clause",
           "Explanation (UK law)",
           "Legal references",
           "Possible consequences",
           "Severity of consequences (0–3)",
           "Consequences category",
-          "Risk category"
+          "Risk category",
+          "Revised clause",
+          "Revision explanation",
+          "Suggested Follow-Up for Tenant"
         ];
         
         const rows = findings.map(f => [
@@ -3062,21 +3092,27 @@
           f.possible_consequences || "",
           f.risk_assessment?.severity_of_consequences ?? "",
           f.consequences_category || "",
-          f.risk_category || ""
+          f.risk_category || "",
+          f.revised_clause || "",
+          f.revision_explanation || "",
+          f.suggested_follow_up || ""
         ]);
         
         const worksheetData = [headers, ...rows];
         const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
         
-        // Устанавливаем ширину колонок для лучшей читаемости
+        // Set column widths for better readability
         const colWidths = [
-          { wch: 40 }, // Quote
+          { wch: 50 }, // Clause
           { wch: 50 }, // Explanation
           { wch: 30 }, // Legal references
           { wch: 40 }, // Possible consequences
           { wch: 15 }, // Severity
           { wch: 25 }, // Consequences category
-          { wch: 25 }  // Risk category
+          { wch: 25 }, // Risk category
+          { wch: 50 }, // Revised clause
+          { wch: 40 }, // Revision explanation
+          { wch: 45 }  // Suggested Follow-Up for Tenant
         ];
         worksheet['!cols'] = colWidths;
         
