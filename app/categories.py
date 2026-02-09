@@ -60,12 +60,19 @@ def load_categories_from_csv(csv_path: Path, *, version: str = "cuad_v1_41_from_
                 continue
             if not cid:
                 cid = _slug_id(name)
+            # name and cid are already set above
         else:
             name_raw = r.get("Category (incl. context and answer)", "") or r.get("Category", "")
             desc_raw = r.get("Description", "")
             name = _clean_category_name(name_raw)
             if not name:
                 continue
+            cid = _slug_id(name)
+        
+        # Common validation (should not be needed for simple_schema, but keep for safety)
+        if not name:
+            continue
+        if not cid:
             cid = _slug_id(name)
         base = cid
         i = 2
