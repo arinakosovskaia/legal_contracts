@@ -302,25 +302,25 @@ This script generates a comprehensive list based on known UK housing/tenancy leg
 If you prefer to run directly on your machine:
 
 1. **Install Python 3.11+** and dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
 2. **Set up environment** (same as Docker):
-   ```bash
-   cp env.example .env
+```bash
+cp env.example .env
    # Edit .env with your API keys
-   ```
+```
 
 3. **Create required directories:**
-   ```bash
-   mkdir -p data/uploads data/results configs
-   ```
+```bash
+mkdir -p data/uploads data/results configs
+```
 
 4. **Run the server:**
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
-   ```
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
 **Note**: You may need system dependencies for PDF processing (e.g., `poppler-utils` on Linux). Docker is recommended to avoid these issues.
 
@@ -347,5 +347,21 @@ Once you have it running:
 3. Review the findings and explanations
 4. Customize prompts if needed (see `PROMPTS_README.md`)
 5. Share with your team using Cloudflare Tunnel
+
+### Cloudflare Tunnel Details
+
+When you create a tunnel, you'll see output like:
+
+```
+2026-01-27T21:43:54Z INF Requesting new quick Tunnel on trycloudflare.com...
+2026-01-27T21:43:57Z INF +--------------------------------------------------------------------------------------------+
+2026-01-27T21:43:57Z INF |  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |
+2026-01-27T21:43:57Z INF |  https://carrier-oops-myrtle-convention.trycloudflare.com                                  |
+2026-01-27T21:43:57Z INF +--------------------------------------------------------------------------------------------+
+```
+
+The URL (e.g., `https://carrier-oops-myrtle-convention.trycloudflare.com`) is always different each time you start a tunnel. Share this URL with others - they can access your server through this link!
+
+**To stop the tunnel:** Press `Ctrl+C` in the terminal where cloudflared is running.
 
 Happy contract analyzing! 🎉
