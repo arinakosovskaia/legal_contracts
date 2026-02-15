@@ -1,56 +1,51 @@
 {
-  "version": "cuad_subset_v1",
+  "version": "uk_tenancy_v1",
   "categories": [
     {
-      "id": "change_of_control",
-      "name": "Change of Control",
-      "description": "Clauses addressing what happens if a party undergoes a change in ownership/control."
+      "id": "unlawful_eviction_harassment",
+      "name": "Unlawful Eviction & Harassment",
+      "description": "Clauses that let the landlord/agent force the tenant out, change locks, remove/dispose belongings, harass/pressure the tenant to leave, or withdraw essential services (heating/water/electricity) to coerce compliance—especially without lawful grounds or process."
     },
     {
-      "id": "termination_for_convenience",
-      "name": "Termination for Convenience",
-      "description": "Clauses allowing termination without cause, often with notice."
+      "id": "possession_eviction_court_process",
+      "name": "Possession, Eviction & Court Process",
+      "description": "Clauses that bypass lawful eviction/possession procedure—e.g., re-entry/forfeiture/possession without a court order while the occupier is still residing, or eviction 'at any time'/'immediately'/'without notice'/'without following legal procedures' (including attempts to sidestep Section 8/21 style process)."
     },
     {
-      "id": "anti_assignment",
-      "name": "Anti-Assignment",
-      "description": "Restrictions on assigning the agreement or transferring rights/obligations."
+      "id": "notice_requirements",
+      "name": "Notice Requirements",
+      "description": "Clauses that undermine mandatory notice/consultation/written-information requirements: oral/verbal termination notices, notice of any length or short notice contrary to statutory minima, 'no consultation required' for major works where consultation is required, or denying the tenant written particulars/prescribed information."
     },
     {
-      "id": "limitation_of_liability",
-      "name": "Limitation of Liability",
-      "description": "Caps or limits on a party's liability."
+      "id": "rent_fees_prohibited_payments",
+      "name": "Rent, Fees & Prohibited Payments",
+      "description": "Clauses requiring prohibited payments/fees (admin/referencing/management/contract fees), requiring the tenant to contract with landlord-chosen third parties (e.g., cleaning/insurance) as a tenancy condition, requiring loans to the landlord, allowing service charges regardless of reasonableness, or shifting the landlord’s legal costs onto the tenant automatically."
     },
     {
-      "id": "indemnification",
-      "name": "Indemnification",
-      "description": "Obligations to indemnify/defend another party."
+      "id": "deposits_deposit_protection",
+      "name": "Deposits & Deposit Protection",
+      "description": "Clauses stating deposit protection is optional/not required, deposit is held personally or moved to landlord’s personal account, deposit return is at landlord discretion/no timeframe/indefinite, or allowing arbitrary deductions (e.g., any sum landlord decides; mandatory cleaning regardless of condition; repainting/replace carpets automatically) rather than actual evidenced loss beyond fair wear and tear."
     },
     {
-      "id": "governing_law",
-      "name": "Governing Law",
-      "description": "Which jurisdiction's law governs the agreement."
+      "id": "quiet_enjoyment_occupier_rights",
+      "name": "Quiet Enjoyment & Occupier Rights",
+      "description": "Clauses that allow landlord entry/access without reasonable notice/consent (e.g., enter at any time; no notice; unrestricted access; daily inspections; viewings at any time; tenant waives quiet enjoyment), or imply the landlord can retain keys and enter freely beyond genuine emergencies."
     },
     {
-      "id": "confidentiality",
-      "name": "Confidentiality",
-      "description": "Obligations to keep information confidential."
+      "id": "tenancy_type_security_of_tenure",
+      "name": "Tenancy Type & Security of Tenure",
+      "description": "Clauses that misrepresent tenancy type or attempt to exclude statutory protections tied to residential tenancies (e.g., claiming fitness/ habitability protections do not apply; 'statutory protections do not apply to this tenancy type')."
     },
     {
-      "id": "non_solicit",
-      "name": "Non-Solicit",
-      "description": "Restrictions on soliciting or hiring the other party's employees/customers."
+      "id": "licensing_regulatory_compliance",
+      "name": "Licensing & Regulatory Compliance",
+      "description": "Clauses disclaiming or shifting landlord statutory safety/licensing duties (gas safety, electrical safety, fire alarms, HMO obligations) onto the tenant, asserting checks are unnecessary, or 'as-is' / waiver language attempting to avoid habitability/safety compliance."
     },
     {
-      "id": "non_compete",
-      "name": "Non-Compete",
-      "description": "Restrictions on competing activities during/after the agreement."
-    },
-    {
-      "id": "ip_ownership",
-      "name": "Intellectual Property Ownership",
-      "description": "Who owns IP created/used under the agreement."
+      "id": "unfair_terms_consumer_protection",
+      "name": "Unfair Terms & Consumer Protection",
+      "description": "Catch-all unfair consumer terms creating significant imbalance: excluding landlord liability for personal injury/death due to negligence; excluding tenant remedies/compensation for landlord breach; unilateral discretion/approval; unilateral variation of rules/terms; excessive penalties/late fees; non-refundable sums retained even if landlord cancels; automatic renewal with harsh notice deadlines; hidden annex terms not provided pre-signature; forced arbitration/no court access; landlord sole discretion on 'damage', rent, or included amenities."
     }
-  ]
+  ],
+  "source": "/Users/arina/Desktop/github/legal_contracts/data/category_definitions_new.csv"
 }
-

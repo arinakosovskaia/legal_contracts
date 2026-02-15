@@ -613,14 +613,11 @@ def _lines_to_paragraphs(lines: list[LineInfo]) -> list[ParaInfo]:
 def parse_pdf_to_paragraphs(
     pdf_path: Path,
     *,
-    max_pages: int,
     max_paragraphs: int,
 ) -> tuple[list[Paragraph], int]:
     paragraphs: List[Paragraph] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
         page_count = len(pdf.pages)
-        if page_count > max_pages:
-            raise ValueError(f"PDF has {page_count} pages, exceeds MAX_PAGES={max_pages}.")
         para_idx = 0
         for i, page in enumerate(pdf.pages, start=1):
             # Prefer layout-aware extraction to avoid "everything becomes one paragraph".

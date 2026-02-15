@@ -36,6 +36,8 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = None
     started_at: Optional[datetime] = None
     updated_at: datetime
+    filename: Optional[str] = None
+    estimated_minutes: Optional[int] = None
 
 
 RedFlagCategory = str

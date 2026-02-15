@@ -73,6 +73,10 @@ async def init_db(db_path: Path) -> None:
             await db.execute("ALTER TABLE jobs ADD COLUMN debug_window_enabled INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN estimated_minutes INTEGER")
+        except Exception:
+            pass
         await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at)")
         await db.commit()
 
@@ -128,6 +132,7 @@ async def update_job(
     page_count: Optional[int] = None,
     paragraph_count: Optional[int] = None,
     result_path: Optional[Path] = None,
+    estimated_minutes: Optional[int] = None,
 ) -> None:
     fields = []
     values = []
@@ -155,6 +160,9 @@ async def update_job(
     if result_path is not None:
         fields.append("result_path=?")
         values.append(str(result_path))
+    if estimated_minutes is not None:
+        fields.append("estimated_minutes=?")
+        values.append(int(estimated_minutes))
     fields.append("updated_at=?")
     values.append(utcnow().isoformat())
 

@@ -352,6 +352,15 @@
       .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
       .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
       .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+      .file-info-link { color: inherit; text-decoration: underline; cursor: pointer; }
+      .file-info-link:hover { opacity: 0.9; }
+      .ai-disclaimer {
+        text-align: center;
+        padding: 16px 24px 24px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
       @media (max-width: 980px) {
         .split-view { flex-direction: column; }
         .pdf-pane, .details-pane { max-width: 100%; }
@@ -504,7 +513,7 @@
                 <div style="margin-top: 8px;">
                   <label style="display: flex; gap: 8px; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="settingsRememberKey" checked style="width: auto; margin-top: 0;" />
-                    <span style="font-size: 13px; color: var(--muted); line-height: 1.5;">Remember API key in browser (localStorage)</span>
+                    <span style="font-size: 13px; color: var(--muted); line-height: 1.5;">Remember API key in browser</span>
                   </label>
                 </div>
               </div>
@@ -1236,7 +1245,11 @@
         fd.append("enable_debug_window", debugWindowEnabled);
         fd.append("mode", useLegacySingle === "1" ? "single_legacy" : "uk_two_stage");
         fd.append("analysis_mode", analysisMode);
-        const res = await fetch("/upload", { method: "POST", body: fd, credentials: "include" });
+        const uploadTimeoutMs = 120000; // 2 min for upload + server validation
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), uploadTimeoutMs);
+        const res = await fetch("/upload", { method: "POST", body: fd, credentials: "include", signal: controller.signal });
+        clearTimeout(timeoutId);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
         return data;
@@ -2142,8 +2155,18 @@
               el("liveTraceBox").innerHTML = "";
             }
             if (st === "queued" || st === "running") {
-              title = "Please wait a moment. We are analyzing your document.";
-              statusLine = "Processing…";
+              const fn = (job.filename || "").toLowerCase();
+              const isPdf = fn && !fn.endsWith(".txt");
+              if (job.stage === "parse" && isPdf) {
+                title = "Reading PDF";
+                statusLine = "Reading PDF";
+              } else {
+                statusLine = "Processing document";
+                title = "Please wait a moment. We are analyzing your document.";
+                if (job.estimated_minutes) {
+                  title = "Processing can take nearly " + job.estimated_minutes + " minute" + (job.estimated_minutes !== 1 ? "s" : "") + ".";
+                }
+              }
             } else if (st === "done") {
               title = "Done";
               statusLine = "Analysis complete. Results below.";
@@ -2253,7 +2276,7 @@
             fileInfo.style.color = "var(--accent)";
               const fileName = input.files[0].name;
               if (fileName === "example_contract.pdf") {
-                fileInfo.innerHTML = `✓ Example file selected: <strong>${fileName}</strong>`;
+                fileInfo.innerHTML = `✓ Example file selected: <strong><a href="/static/example_contract.pdf" target="_blank" rel="noopener" class="file-info-link">${fileName}</a></strong>`;
               } else {
                 fileInfo.innerHTML = `✓ File selected: <strong>${fileName}</strong>`;
               }
@@ -2281,7 +2304,10 @@
           fileInput.parentNode.replaceChild(newInput, fileInput);
           attachFileInputListener(newInput);
         }
-        if (fileInfo) fileInfo.style.display = "none";
+        if (fileInfo) {
+          fileInfo.innerHTML = "";
+          fileInfo.style.display = "none";
+        }
         isExampleContract = false;
         return false;
       }
@@ -2654,7 +2680,7 @@
             if (fileInfo) {
               fileInfo.style.display = "block";
               fileInfo.style.color = "var(--accent)";
-              fileInfo.innerHTML = `✓ Example file selected: <strong>${loadedFile.name}</strong>`;
+              fileInfo.innerHTML = `✓ Example file selected: <strong><a href="/static/example_contract.pdf" target="_blank" rel="noopener" class="file-info-link">${loadedFile.name}</a></strong>`;
             }
             
             // Verify file is still there after a short delay (to catch any issues)
@@ -2752,7 +2778,7 @@
             if (fileInfo) {
               fileInfo.style.display = "block";
               fileInfo.style.color = "var(--accent)";
-              fileInfo.innerHTML = `✓ Example contract loaded: <strong>${file.name}</strong>`;
+              fileInfo.innerHTML = `✓ Example contract loaded: <strong><a href="/static/example_contract.pdf" target="_blank" rel="noopener" class="file-info-link">${file.name}</a></strong>`;
             }
             
             // Trigger change event to ensure form validation passes
@@ -2864,8 +2890,9 @@
         if (modelField) modelField.classList.remove("field-error");
         if (modelError) modelError.style.display = "none";
 
-        // Validate that at least one input is provided
-        if (!file && !text) {
+        // Validate that at least one input is provided (or we're in example mode and will use /upload-example)
+        const useExampleEndpoint = !file && !text && isExampleContract;
+        if (!file && !text && !useExampleEndpoint) {
           console.log("No file or text provided");
           setStatus("Please select a PDF file or enter contract text", "Error");
           return;
@@ -2913,7 +2940,7 @@
         const hasFile = !!file;
         const hasText = !!text;
         
-        console.log("Proceeding with processing - file:", hasFile, "text:", hasText);
+        console.log("Proceeding with processing - file:", hasFile, "text:", hasText, "useExampleEndpoint:", useExampleEndpoint);
         
         if (hasFile && hasText) {
           console.log("Both file and text provided - using file (file has priority)");
@@ -2924,6 +2951,8 @@
           }
         } else if (hasText) {
           console.log("Processing text only");
+        } else if (useExampleEndpoint) {
+          console.log("Using example contract via /upload-example (no file in input yet)");
         }
         
         // Now show analyze section after we've captured the file reference
@@ -2956,7 +2985,7 @@
         
         try {
           let data;
-          // File has priority over text
+          // File has priority over text; if example mode but no file in input, use /upload-example
           if (file) {
             console.log("Calling uploadPdf - file:", file.name, "size:", file.size);
             if (isExampleContract) {
@@ -2966,8 +2995,10 @@
           } else if (text) {
             console.log("Calling uploadText - text length:", text.length);
             data = await uploadText(text);
+          } else if (useExampleEndpoint) {
+            console.log("Calling uploadExampleContract (example without file in input)");
+            data = await uploadExampleContract();
           } else {
-            // This should not happen due to validation above, but just in case
             throw new Error("No file or text provided for processing");
           }
           
@@ -2978,16 +3009,18 @@
           const jobInfo = el("jobInfo");
           if (jobInfo) jobInfo.textContent = "";
           
-          setStatus(
-            "Queued. Starting analysis…",
-            "Please wait a moment. We are analyzing your document."
-          );
+          if (file) {
+            setStatus("Reading PDF", "Reading PDF");
+          } else {
+            setStatus("Processing document", "Please wait a moment. We are analyzing your document.");
+          }
           
           if (cancelBtn) cancelBtn.disabled = false;
           startPolling(currentJobId);
         } catch (e) {
           console.error("Upload error:", e);
-          setStatus(String(e.message || e), "Error");
+          const msg = e.name === "AbortError" ? "Upload timed out. Try a smaller PDF or check your connection." : String(e.message || e);
+          setStatus(msg, "Error");
         }
       }
 
@@ -3009,7 +3042,16 @@
             setStatus(`${job.status === "cancelled" ? "Cancelled" : "Failed"}: ${job.error || "Unknown error"}`, "Stopped");
             el("cancelBtn").disabled = true;
           } else {
-            setStatus("Processing…", "Please wait a moment. We are analyzing your document.");
+            const fn = (job.filename || "").toLowerCase();
+            const isPdf = fn && !fn.endsWith(".txt");
+            if (job.stage === "parse" && isPdf) {
+              setStatus("Reading PDF", "Reading PDF");
+            } else {
+              const subTitle = job.estimated_minutes
+                ? "Processing can take nearly " + job.estimated_minutes + " minute" + (job.estimated_minutes !== 1 ? "s" : "") + "."
+                : "Please wait a moment. We are analyzing your document.";
+              setStatus("Processing document", subTitle);
+            }
             startPolling(jobId);
           }
         } catch (e) {
@@ -3185,6 +3227,9 @@
       resumeLastJobIfAny();
 
     </script>
+    <footer class="ai-disclaimer" role="contentinfo">
+      AI can make mistakes. Consider checking important information.
+    </footer>
   </body>
 </html>
 

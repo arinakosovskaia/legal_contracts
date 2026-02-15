@@ -64,11 +64,10 @@ def _env_int(name: str, default: int) -> int:
 
 def get_limits() -> dict:
     return {
-        "max_pages": _env_int("MAX_PAGES", 20),
         "max_paragraphs": _env_int("MAX_PARAGRAPHS", 200),
         "max_file_mb": _env_int("MAX_FILE_MB", 0),
         "ttl_hours": _env_int("TTL_HOURS", 24),
-        "max_llm_concurrency": _env_int("MAX_LLM_CONCURRENCY", 8),
+        "max_llm_concurrency": _env_int("MAX_LLM_CONCURRENCY", 12),
     }
 
 
@@ -97,7 +96,7 @@ app = FastAPI(title="Contract Red-Flag Detector (Demo)")
 @app.get("/static/example_contract.pdf")
 async def get_example_contract() -> FileResponse:
     """Serve example contract without authentication."""
-    example_path = STATIC_DIR / "example_contract.pdf"
+    example_path = _resolve_example_contract_path()
     if not example_path.exists():
         raise HTTPException(status_code=404, detail="Example contract not found")
     return FileResponse(
@@ -176,6 +175,10 @@ def _is_signature_paragraph(text: str) -> bool:
     if parse_heading(text, max_len=160) is not None:
         return False
     t = text.strip()
+    # Protect sub-clause markers like "2.4. Prices." or "5.7 Nonsolicitation." —
+    # parse_heading rejects them (subsection numbers) but they ARE contract content.
+    if re.match(r"^\s*\d+(?:\.\d+)+", t):
+        return False
     if len(t) < 3:
         return False
     
@@ -513,10 +516,15 @@ async def health(_: None = Depends(require_basic_auth)) -> JSONResponse:
     )
 
 
-EXAMPLE_CONTRACT_PATH = (
-    DATA_DIR / "CUAD_v1" / "full_contract_pdf" / "Part_III" / "Distributor"
-    / "LIMEENERGYCO_09_09_1999-EX-10-DISTRIBUTOR AGREEMENT.PDF"
-)
+def _resolve_example_contract_path() -> Path:
+    """Resolve path to the example contract PDF. Prefer EXAMPLE_CONTRACT_PATH env if set and exists."""
+    env_path = os.environ.get("EXAMPLE_CONTRACT_PATH", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+    default = STATIC_DIR / "example_contract.pdf"
+    return default
 
 
 @app.post("/upload-example", response_model=UploadResponse)
@@ -531,10 +539,13 @@ async def upload_example(
     use_demo_key: str = Form("0"),
     _: None = Depends(require_basic_auth),
 ) -> UploadResponse:
-    """Create a job from the built-in example contract (LIMEENERGYCO) so all 4 expected quotes are analyzed."""
-    example_path = EXAMPLE_CONTRACT_PATH if EXAMPLE_CONTRACT_PATH.exists() else (BASE_DIR / "static" / "example_contract.pdf")
+    """Create a job from the built-in example contract."""
+    example_path = _resolve_example_contract_path()
     if not example_path.exists():
-        raise HTTPException(status_code=404, detail="Example contract not found. Run scripts/refresh_example_contract.sh or add static/example_contract.pdf")
+        raise HTTPException(
+            status_code=404,
+            detail="Example contract not found. Add static/example_contract.pdf or set EXAMPLE_CONTRACT_PATH to your PDF path.",
+        )
     limits = get_limits()
     job_id = secrets.token_hex(12)
     upload_path = job_upload_path(paths, job_id, example_path.name)
@@ -587,23 +598,6 @@ async def upload(
     upload_path = job_upload_path(paths, job_id, file.filename or "upload.pdf")
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     upload_path.write_bytes(raw)
-
-    try:
-        import pdfplumber
-
-        with pdfplumber.open(str(upload_path)) as pdf:
-            page_count = len(pdf.pages)
-        if page_count > limits["max_pages"]:
-            upload_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=400,
-                detail=f"PDF has {page_count} pages, exceeds MAX_PAGES={limits['max_pages']}.",
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        upload_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Failed to read PDF. Is it a valid, non-encrypted PDF?")
 
     dbg_para = (enable_debug_paragraph or "").strip() in ("1", "true", "yes", "on")
     dbg_win = (enable_debug_window or "").strip() in ("1", "true", "yes", "on")
@@ -715,6 +709,8 @@ async def job_status(job_id: str, _: None = Depends(require_basic_auth)) -> JobS
         error=row.get("error"),
         started_at=datetime.fromisoformat(row["started_at"]) if row.get("started_at") else None,
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        filename=row.get("filename"),
+        estimated_minutes=int(row["estimated_minutes"]) if row.get("estimated_minutes") is not None else None,
     )
 
 @app.post("/job/{job_id}/cancel")
@@ -839,7 +835,6 @@ async def job_annotated_data(job_id: str, _: None = Depends(require_basic_auth))
     else:
         paragraphs, page_count = parse_pdf_to_paragraphs(
             upload_path,
-            max_pages=limits["max_pages"],
             max_paragraphs=limits["max_paragraphs"],
         )
 
@@ -891,7 +886,6 @@ async def job_annotated_pdf(job_id: str, _: None = Depends(require_basic_auth)) 
     else:
         paragraphs, _page_count = parse_pdf_to_paragraphs(
             upload_path,
-            max_pages=limits["max_pages"],
             max_paragraphs=limits["max_paragraphs"],
         )
 
@@ -907,6 +901,7 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
     upload_path = Path(row["upload_path"])
     enable_debug_paragraph = False
     enable_debug_window = False
+    t0 = time.monotonic()
     try:
         LOGGER.info("Job %s started: %s", job_id, upload_path.name)
         _JOB_TASKS.setdefault(job_id, set())
@@ -935,11 +930,10 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             # Parse PDF file
             paragraphs, page_count = parse_pdf_to_paragraphs(
                 upload_path,
-                max_pages=limits["max_pages"],
                 max_paragraphs=limits["max_paragraphs"],
             )
         paragraphs = _normalize_paragraphs(paragraphs)
-        LOGGER.info("Job %s parsed: pages=%s paragraphs=%s", job_id, page_count, len(paragraphs))
+        LOGGER.info("Job %s [timing] parse done in %.1fs — pages=%s paragraphs=%s", job_id, time.monotonic() - t0, page_count, len(paragraphs))
         await update_job(
             paths.db,
             job_id,
@@ -1154,19 +1148,18 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                 return "." not in label
             return False
         
-        # Pattern to detect headings that start a paragraph but have body text after (e.g., "5.8. Title. Body...")
+        # Paragraph starts with "N. Title" then body. Body starts with capital: after " ", ". ", or " N.M ".
         heading_with_body_pattern = re.compile(
-            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Za-z\s]{2,}?)\s*\.\s+[A-Z]",
+            r"^\s*(\d+(?:\.\d+)*)\s*\.?\s+([A-Z][A-Za-z\s]{2,}?)\s+(?:\.\s+|\d+\.\d+\s+)?[A-Z]",
             re.IGNORECASE
         )
-        
+
         for p in filtered_paragraphs:
             para_text = (p.text or "").strip()
             heading = parse_heading(para_text, max_len=160)
             is_section_heading = _is_top_level_section_heading(heading)
-            
-            # Also check if paragraph starts with a heading pattern (heading + body in same para)
-            # Only split on top-level section numbers (e.g., "1. Title. Body"), not subsections (e.g., "1.1").
+
+            # Paragraph starts with heading + body: "N. Title. Body" or "N. Title N.M Body"
             m = heading_with_body_pattern.match(para_text)
             starts_with_heading = False
             if m:
@@ -1184,7 +1177,6 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                     is_uppercase_heading = uppercase_ratio >= 0.5
                     is_title_case_short = (2 <= len(words) <= 4 and titlecase_ratio >= 0.5)
                     is_heading_like = (is_uppercase_heading or is_short_heading or is_title_case_short)
-                    # Only split on top-level section numbers (e.g., "1. Title. Body"), not subsections (e.g., "1.1").
                     starts_with_heading = is_heading_like and num_part.count(".") == 0
             
             if (is_section_heading or starts_with_heading) and cur:
@@ -1933,6 +1925,97 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         }
                     )
 
+            # Count windows with the same logic as the loop below (for accurate time estimate)
+            _n_windows = 0
+            for _si, _sec in enumerate(sections):
+                _sec_body = [p for p in _sec if not _is_heading_paragraph(p.text)]
+                if not _sec_body:
+                    continue
+                _starts: list[int] = [0]
+                while True:
+                    _prev = _starts[-1]
+                    _need = stride_tokens
+                    _i = _prev
+                    while _i < len(_sec_body) and _need > 0:
+                        _need -= _approx_tokens(_sec_body[_i].text)
+                        _i += 1
+                    if _i >= len(_sec_body):
+                        break
+                    _starts.append(_i)
+                _last_main_s, _last_main_e = -1, -1
+                for _s in _starts:
+                    _t = 0
+                    _e = _s
+                    while _e < len(_sec_body) and _t < window_tokens:
+                        _t += _approx_tokens(_sec_body[_e].text)
+                        _e += 1
+                    if _e <= _s:
+                        _e = min(len(_sec_body), _s + 1)
+                    if _last_main_s >= 0 and _last_main_e >= 0 and _s >= _last_main_s and _e <= _last_main_e:
+                        continue
+                    _main_block = _sec_body[_s:_e]
+                    _joined = "\n\n".join(p.text for p in _main_block)
+                    _near_start, _near_end = _find_trigger_edges(_joined, edge_frac)
+                    _exp_s, _exp_e = _extend_window_by_stride(
+                        _sec_body, _s, _e, stride_tokens=stride_tokens, extend_left=_near_start, extend_right=_near_end
+                    )
+                    _exp_s = max(0, min(_exp_s, len(_sec_body)))
+                    _exp_e = max(_exp_s, min(_exp_e, len(_sec_body)))
+                    _trimmed = _exp_e
+                    for _ii in range(_exp_s, _exp_e):
+                        if _is_signature_paragraph((_sec_body[_ii].text or "").strip()):
+                            _trimmed = _ii
+                            break
+                    _exp_e = _trimmed
+                    if _exp_e <= _exp_s:
+                        _exp_s, _exp_e = _s, _e
+                        if _exp_e <= _exp_s:
+                            _exp_e = min(_exp_s + 1, len(_sec_body))
+                    _expanded = _sec_body[_exp_s:_exp_e]
+                    if _expanded:
+                        _expanded = [p for p in _expanded if not _is_heading_paragraph(p.text)]
+                        if _expanded:
+                            _first_si = section_by_idx.get(_expanded[0].paragraph_index)
+                            if _first_si:
+                                _filtered = []
+                                for _p in _expanded:
+                                    _ps = section_by_idx.get(_p.paragraph_index)
+                                    if _ps and _ps[0] == _first_si[0]:
+                                        _filtered.append(_p)
+                                    else:
+                                        break
+                                _expanded = _filtered if _filtered else _sec_body[_s:_e]
+                            if not _expanded:
+                                _expanded = _sec_body[_s:_e] if _s < len(_sec_body) else []
+                    _start_i = _exp_s
+                    _end_i = _exp_s + len(_expanded) if _expanded else _exp_s
+                    _total_size = approx_size(_expanded) if _expanded else 0
+                    if _total_size > max_chars and _expanded:
+                        _sub_start = _start_i
+                        while _sub_start < _end_i:
+                            _sub_paras: list[Paragraph] = []
+                            _sub_end = _sub_start
+                            while _sub_end < _end_i and approx_size(_sub_paras + [_sec_body[_sub_end]]) <= max_chars:
+                                _sub_paras.append(_sec_body[_sub_end])
+                                _sub_end += 1
+                            if not _sub_paras:
+                                _sub_end = min(_end_i, _sub_start + 1)
+                            _n_windows += 1
+                            if _sub_end >= _end_i:
+                                break
+                            _sub_start = max(_sub_end - 1, _sub_start + 1)
+                    else:
+                        _n_windows += 1
+                    _last_main_s, _last_main_e = _s, _e
+            if _n_windows > 0:
+                _t_after_count = time.monotonic()
+                _calls_per_window = 2 if not single_classifier else 1
+                _concurrency = limits["max_llm_concurrency"]
+                _estimated_sec = (_n_windows * _calls_per_window * 90) / _concurrency
+                _est_min = max(1, int(_estimated_sec / 60) + (1 if _estimated_sec % 60 > 0 else 0) + 1)  # +1 min margin
+                await update_job(paths.db, job_id, estimated_minutes=_est_min)
+                LOGGER.info("Job %s [timing] window count done in %.1fs — %s windows, estimated nearly %s min", job_id, _t_after_count - t0, _n_windows, _est_min)
+
             window_tasks: list[asyncio.Task] = []
             for si, sec in enumerate(sections):
                     # Check cancellation before processing each section
@@ -2130,6 +2213,9 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             succeeded = 0
             failed = 0
             pending = set(window_tasks)
+            t_llm_start = time.monotonic()
+            total_windows = len(window_tasks)
+            LOGGER.info("Job %s [timing] LLM phase starting — %s windows", job_id, total_windows)
             while pending:
                 # Check cancellation before waiting
                 if _is_cancelled(job_id):
@@ -2170,10 +2256,15 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
                         # Don't raise - continue processing other tasks
                         LOGGER.warning(f"Window task failed: {exc}")
                     done += 1
+                    if done % 5 == 0 or done == total_windows:
+                        elapsed = time.monotonic() - t_llm_start
+                        LOGGER.info("Job %s [timing] LLM progress %s/%s windows in %.1fs (%.1fs per window so far)", job_id, done, total_windows, elapsed, elapsed / done if done else 0)
                     if window_tasks:
                         prog = 55 + int(40 * (done / max(1, len(window_tasks))))
                         await update_job(paths.db, job_id, stage="processing", progress=min(95, prog))
 
+            if window_tasks:
+                LOGGER.info("Job %s [timing] LLM phase done in %.1fs — %s windows total", job_id, time.monotonic() - t_llm_start, total_windows)
             if window_tasks and succeeded == 0:
                 raise RuntimeError(
                     "Error. The most likely cause is an invalid API key. "
@@ -2277,7 +2368,10 @@ async def process_job(job_id: str, llm_overrides: Optional[dict] = None) -> None
             _clear_live_trace(job_id)
         _CANCELLED.discard(job_id)
         _JOB_TASKS.pop(job_id, None)
-        LOGGER.info("Job %s done", job_id)
+        LOGGER.info(
+            "Job %s [timing] total %.1fs — done (temperature=%.1f, seed=%s, findings=%s)",
+            job_id, time.monotonic() - t0, temperature, seed if seed is not None else "none", len(findings),
+        )
     except Exception as e:
         LOGGER.exception("Job %s failed", job_id)
         if enable_debug_window:

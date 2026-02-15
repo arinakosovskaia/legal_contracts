@@ -103,7 +103,7 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         re.compile(r"^\s*Phone:\s*", re.IGNORECASE),  # "Phone: number"
         re.compile(r"^\s*Email:\s*", re.IGNORECASE),  # "Email: address"
         re.compile(r"^\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+[A-Z][a-z]+)?\s*$"),  # "Joseph Marino, President" or "John Smith, Esq." (name, title pattern)
-        re.compile(r"^\s*\d+\s+[A-Z][a-z]+\s+(?:Street|Road|Avenue|Drive|Lane|Boulevard|Way|Court|Place|Circle)\b", re.IGNORECASE),  # Address lines
+        re.compile(r"^\s*\d+\s+[A-Z][a-z]+\s+(?:Street|Road|Avenue|Drive|Lane|Boulevard|Way|Court|Place|Circle|Terrace|Parkway|Highway|Trail|Blvd)\b", re.IGNORECASE),  # Address lines
         # Signature patterns
         re.compile(r"^\s*By:\s*", re.IGNORECASE),  # "By: /s/Joseph Marino"
         re.compile(r"^\s*By:\s+.*By:\s+", re.IGNORECASE),  # "By: /s/Joseph Marino By: Jim Stump"
@@ -133,7 +133,11 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         # Do not treat subsection numbers like "5.1" / "5.2" as headings at all.
         if "." in (num or ""):
             return None
-        rest = raw[len(m.group(0)) :].strip(" \t-–—:") or None
+        rest_raw = raw[len(m.group(0)) :]
+        # Reject mid-sentence references like "SECTION 10, OR THE RESPECTIVE..."
+        if rest_raw and rest_raw.lstrip()[0:1] in (",", ";"):
+            return None
+        rest = rest_raw.strip(" \t-–—:") or None
         return Heading(level=1, label=f"Section {num}", title=rest, raw=raw)
 
     m = _RE_CLAUSE_NUM.match(raw)
@@ -174,22 +178,49 @@ def parse_heading(text: str, *, max_len: int = 120) -> Optional[Heading]:
         level = 2
         if tail:
             level += 1
+        # Bare numbers without title or period/bracket (e.g. "2", "15") are page numbers, not headings
+        if not title and not tail and not re.match(r"^\s*\d+\s*[.)]\s*$", raw):
+            return None
         if _looks_like_sentence(raw):
             # Allow bare markers like "1." even if sentence end is "."
             if re.match(r"^\s*\d+[.)]?\s*$", raw):
                 return Heading(level=level, label=num + tail, title=None, raw=raw)
+            return None
+        # Reject when "title" starts with a lowercase letter — it's body text, not a heading
+        # e.g. "24 hours' written notice" has num=24 but title="hours' written notice"
+        if title and title[0].islower():
+            return None
+        # Reject when "title" is purely numeric — likely zip code or page reference (e.g. "98004 51054")
+        if title and re.match(r"^[\d\s]+$", title):
             return None
         return Heading(level=level, label=num + tail, title=title, raw=raw)
 
     # Unnumbered headings: ALL CAPS / Title Case and not sentence-like
     if _looks_like_sentence(raw):
         return None
+    # Headings never start with a lowercase letter
+    if raw and raw[0].islower():
+        return None
     words = raw.split()
     if not (1 <= len(words) <= 12):
         return None
+    # Exclude UK postcodes (e.g. "AB1 2CD", "SW1A 1AA")
+    if re.match(r"^\s*[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\s*$", raw):
+        return None
+    # Exclude "Label: Value" lines (e.g. "Account Holder: Ashwick Court")
+    if ":" in raw and not raw.strip().endswith(":"):
+        return None
+    # ALL CAPS headings (RECITALS, RIGHT OF WAY, etc.) — keep broad
+    # But reject if it contains commas — likely body text not a heading
     if _RE_ALLCAPS_LINE.match(raw) and _uppercase_ratio(raw) >= 0.85:
-        return Heading(level=1, label=raw.title(), title=None, raw=raw)
-    if _titlecase_ratio(raw) >= 0.7:
+        if "," not in raw:
+            return Heading(level=1, label=raw.title(), title=None, raw=raw)
+    # Title Case headings — stricter: require 2+ words, exclude addresses and names
+    if re.search(r"\b(?:Street|Road|Avenue|Drive|Lane|Boulevard|Way|Court|Place|Circle|Suite|Floor|Flat|Room|Building|Terrace|Parkway|Highway|Trail|Blvd)\b", raw, re.IGNORECASE):
+        return None
+    if re.match(r"^\s*(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s", raw, re.IGNORECASE):
+        return None
+    if len(words) >= 2 and _titlecase_ratio(raw) >= 0.7:
         return Heading(level=1, label=raw, title=None, raw=raw)
 
     return None
